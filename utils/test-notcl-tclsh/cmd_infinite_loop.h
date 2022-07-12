@@ -1,0 +1,1 @@
+int cmd_infinite_loop(ClientData cd, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
