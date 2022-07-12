@@ -2,8 +2,8 @@ NoTcl: Replace Tcl scripting with Python
 ========================================
 
 .. image:: https://readthedocs.org/projects/notcl/badge/?version=latest
-:target: https://notcl.readthedocs.io/en/latest/?badge=latest
-:alt: Documentation Status
+    :target: https://notcl.readthedocs.io/en/latest/?badge=latest
+    :alt: Documentation Status
 
 Many tools, especially in VLSI / digital circuit design, expose their functionality through a custom Tcl interpreter. In order to automate those programs, users are expected to write Tcl scripts. With growing complexity, such Tcl scripts become difficult to maintain and often do not integrate seamlessly into the context, in which the tools are used.
 
