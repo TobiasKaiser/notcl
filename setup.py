@@ -3,7 +3,7 @@ import setuptools
 
 setuptools.setup(
     name="notcl",
-    version="0.2.1",
+    version="0.2.2",
     author="Tobias Kaiser",
     author_email="mail@tb-kaiser.de",
     description="Replace Tcl scripting with Python",
