@@ -14,6 +14,12 @@ from . import msg_classes as msg
 from .tclobj import TclRemoteObjRef
 from .bridge_server import BridgeServer
 
+class ANSITerm:
+    FgBrightYellow = "\x1b[93m"
+    BgRed = "\x1b[41m"
+    BgGreen = "\x1b[42m"
+    Reset = "\x1b[0m"
+
 class TclError(Exception):
     """
     Errors in Tcl are forwarded to Python and raised in the form of a TclError
@@ -252,22 +258,19 @@ class TclTool(ABC):
         elif log_type == "info":
             log_symbol = "Info:"
 
+        style_notcl = ""
+        style_reset = ""
+        style_symbol = ""
+
         if self.log_fancy:
-            style_notcl = "\x1b[93m"
+            style_notcl = ANSITerm.FgBrightYellow
+            style_reset = ANSITerm.Reset
             if log_type=="error":
-                style_symbol = "\x1b[1;41m"
+                style_symbol = ANSITerm.BgRed
             elif log_type=="info":
-                style_symbol = "\x1b[1;42m"
-            else:
-                style_symbol = ""
-            style_reset = "\x1b[0m"
-        else:
-            style_notcl = ""
-            style_reset = ""
-            style_symbol = ""
+                style_symbol = ANSITerm.BgGreen
         
         print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}")
-
 
     def eval(self, cmd: str) -> TclRemoteObjRef:
         """
