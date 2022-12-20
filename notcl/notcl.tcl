@@ -155,7 +155,6 @@ namespace eval NoTcl {
                 PyProcedureCall {
                     set cmd [dict get $r_msg command]
 
-
                     log "Executing command: $cmd"
 
                     set err_code [catch $cmd cmd_results($cmd_idx)]
@@ -164,7 +163,7 @@ namespace eval NoTcl {
                     # Unfortunately, this is not always supported.
                     #log "Command finished, return [::tcl::unsupported::representation $cmd_results($cmd_idx)]" 
                     if { $repr_supported } {
-                        log "Command finished, return [::tcl::unsupported::representation $cmd_results($cmd_idx)]"
+                        log "Command finished, returned [::tcl::unsupported::representation $cmd_results($cmd_idx)]."
                     } else {
                         log [format "Command finished, returned \"%s\"." $cmd_results($cmd_idx)]
                     }
@@ -187,13 +186,10 @@ namespace eval NoTcl {
 
     proc main {} {
         NoTcl::send_hello
-        NoTcl::comm_loop
+        if { [ NoTcl::comm_loop ] } {
+            exit
+        }
     }
 }
 
-if { [ NoTcl::main ] } {
-    exit
-} else {
-    puts "=== Python control finished ==="
-    puts "Please exit Tcl tool to continue Python script."
-}
+NoTcl::main

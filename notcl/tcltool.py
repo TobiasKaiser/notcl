@@ -1,4 +1,5 @@
 import os
+import traceback
 import subprocess
 import pkg_resources
 import signal
@@ -46,7 +47,7 @@ class TclTool(ABC):
     """ 
 
     def __init__(self, cwd:Optional[Union[Path, str]]=None, interact:bool=False,
-            log_commands:Literal[False, 'fancy', 'plain']=False,
+            log_commands:bool=True, log_retvals:bool=False, log_fancy:bool=True,
             debug_tcl:bool=False, debug_py:bool=False):
         """
         Args:
@@ -55,20 +56,19 @@ class TclTool(ABC):
                 at the end of the with block. Instead, the Tcl tool remains open
                 for the user to interact with. In this case, the Python script
                 will wait for the user to close the tool manually before continuing.
-            log_commands: When set to 'plain' or 'fancy', every string sent to the
-                Tcl tool for evaluation and every resulting return value or error
-                will be printed to stdout. 'fancy' adds ANSI controls sequences
-                for colorful output.
+            logs: Enables printing all commands sent to the Tcl tool.
+            log_retvals: Enables printing of all return values received from Tcl tool.
+            log_fancy: Enables colorful printing of commands, return values and
+                errors using ANSI escape sequences.
             debug_tcl: Enable detailed debug output by the Tcl script running in
                 the Tcl tool.
             debug_py: Enable detailed debug output for Python side.
         """
-        
-        if not log_commands in (False, "fancy", "plain"):
-            raise TypeError("log_commands must be False, 'fancy' or 'plain'.")
-        
+
         self.interact = interact
         self.log_commands = log_commands
+        self.log_retvals = log_retvals
+        self.log_fancy = log_fancy
         self.debug_tcl=debug_tcl
         self.debug_py=debug_py
 
@@ -155,14 +155,24 @@ class TclTool(ABC):
                     yield TclToolInterface(self)
                 except ChildProcessExited:
                     clean_exit = False
+                except:
+                    self.debug_log("Caught exception in TclTool context.")
+                    s = traceback.format_exc()
+                    self.log("error",
+                        "Following exception is held back and will be raised "
+                        f"once the Tcl child process exists:\n{s}")
+                    raise
+            
                 finally:
                     if clean_exit:
                         self.debug_log("Sending PyExit")
-                        quit = "0" if self.interact else "1"
+                        if self.interact:
+                            self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
+                            quit = '0'
+                        else:
+                            quit = '1'
                         self.bs.send(msg.PyExit(quit=quit))
-            except:
-                self.debug_log("Caught exception in TclTool context.")
-                # Exception info could be extracted here from sys.exc_info (?)
+            except:    
                 raise
             finally:
                 # TODO: There is at least one unhandled race condition here:
@@ -219,56 +229,61 @@ class TclTool(ABC):
 
         return self.eval(" ".join(full_cmd))
 
-    def log_command(self, log_type:Literal["command", "result", "error"], data:str):
+    def log(self, log_type:Literal["command", "info", "retval", "error"], data:str):
         """
-        log_command prints log messages for every Tcl command invokation and every
-        received return value or error. It is enabled/disabled by the log_commands
+        log prints log messages for every Tcl command invokation and every
+        received return value or error. It is enabled/disabled by the logs
         argument passed to __init__.
         """
-        assert log_type in ("command", "result", "error")
+        assert log_type in ("command", "retval", "error", "info")
         if log_type == "command":
             self.debug_log(f"Running command: {data}")
-            log_symbol = "-->"
-        elif log_type == "result":
-            self.debug_log(f"Received return value: {data}")
-            log_symbol = "<--"
+            if not self.log_commands:
+                return
+            log_symbol = "Cmd:"
+        elif log_type == "retval":
+            self.debug_log(f"Return value: {data}")
+            if not self.log_retvals:
+                return
+            log_symbol = "Result:"
         elif log_type == "error":
             self.debug_log(f"Received error as return value: {data}")
-            log_symbol = "<!!"
+            log_symbol = "Error:"
+        elif log_type == "info":
+            log_symbol = "Info:"
 
-        if self.log_commands=='fancy':
-            style_notcl = "\x1b[1;46m"
+        if self.log_fancy:
+            style_notcl = "\x1b[93m"
             if log_type=="error":
                 style_symbol = "\x1b[1;41m"
+            elif log_type=="info":
+                style_symbol = "\x1b[1;42m"
             else:
-                style_symbol = "\x1b[1;32m"
+                style_symbol = ""
             style_reset = "\x1b[0m"
-        elif self.log_commands=='plain':
+        else:
             style_notcl = ""
             style_reset = ""
             style_symbol = ""
-        else:
-            assert not self.log_commands
-            return
         
-        print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}{style_reset}")
+        print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}")
 
 
     def eval(self, cmd: str) -> TclRemoteObjRef:
         """
         Low-level method that passes a string to Tcl for evaluation.
         """
-        self.log_command("command", cmd)
+        self.log("command", cmd)
         self.bs.send(msg.PyProcedureCall(command=cmd))
         r_msg = self.bs.recv(msg.TclProcedureResult)
         cmd_idx = int(r_msg.cmd_idx)
         err_code = int(r_msg.err_code)
         
         if err_code:
-            self.log_command("error", cmd)
+            self.log("error", f"{r_msg.result}")
             raise TclError(r_msg.result)
         else:
-            self.log_command("result", r_msg.result)
+            self.log("retval", r_msg.result)
             return TclRemoteObjRef(self, cmd_idx, r_msg.result, cmd)
         
 
