@@ -54,7 +54,7 @@ class TclTool(ABC):
 
     def __init__(self, cwd:Optional[Union[Path, str]]=None, interact:bool=False,
             log_commands:bool=True, log_retvals:bool=False, log_fancy:bool=True,
-            debug_tcl:bool=False, debug_py:bool=False):
+            debug_tcl:bool=False, debug_py:bool=False, abort_on_error:bool=True):
         """
         Args:
             cwd: Directory in which to Tcl-based tool is run.
@@ -69,6 +69,8 @@ class TclTool(ABC):
             debug_tcl: Enable detailed debug output by the Tcl script running in
                 the Tcl tool.
             debug_py: Enable detailed debug output for Python side.
+            abort_on_error: Terminate child process when a Tcl error occured, even
+                if interact is set to True.
         """
 
         self.interact = interact
@@ -77,6 +79,7 @@ class TclTool(ABC):
         self.log_fancy = log_fancy
         self.debug_tcl=debug_tcl
         self.debug_py=debug_py
+        self.abort_on_error = abort_on_error
 
         self.cm = None
         
@@ -154,6 +157,11 @@ class TclTool(ABC):
             
             clean_exit = True
 
+            if self.interact:
+                quit = '0'
+            else:
+                quit = '1'
+
             try:
                 self.hello=self.bs.recv(msg.TclHello)
                 self.debug_log(f"Received TclHello: {self.hello}")
@@ -163,20 +171,21 @@ class TclTool(ABC):
                     clean_exit = False
                 except:
                     self.debug_log("Caught exception in TclTool context.")
-                    s = traceback.format_exc()
-                    self.log("error",
-                        "Following exception is held back and will be raised "
-                        f"once the Tcl child process exists:\n{s}")
+                    if self.abort_on_error:
+                        quit = '1'
+                    else:
+                        s = traceback.format_exc()
+                        self.log("error",
+                            "Following exception is held back and will be raised "
+                            f"once the Tcl child process exists:\n{s}")
                     raise
             
                 finally:
                     if clean_exit:
                         self.debug_log("Sending PyExit")
-                        if self.interact:
+                        
+                        if quit == '0':
                             self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
-                            quit = '0'
-                        else:
-                            quit = '1'
                         self.bs.send(msg.PyExit(quit=quit))
             except:    
                 raise
