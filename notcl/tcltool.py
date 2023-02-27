@@ -199,10 +199,11 @@ class TclTool(ABC):
                 self.debug_log("TclTool context finished, waiting for child process to terminate.")
                 rc = self.proc.wait()
 
-                if rc==0:
+                if rc==0 and clean_exit:
                     self.debug_log("Child process terminated with return code {rc}.")
                 else:
                     self.debug_log("Child process terminated with abnormal return code {rc}.")
+                    # If clean_exit is False, CalledProcessError is raised even though rc might be 0.
                     raise subprocess.CalledProcessError(rc, cmdline)
 
     def __enter__(self):

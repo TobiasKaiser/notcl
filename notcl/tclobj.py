@@ -1,9 +1,19 @@
 import re
 from functools import reduce
 
-#The Return value of a Tcl command or procedure is basically a string. Without knowledge about the structure or type of the return value, it is not possible to convert this string to a meaningful data structure such as a list or dict in Python.
+"""
+The Return value of a Tcl command or procedure is basically a string. Without
+knowledge about the structure or type of the return value, it is not possible to
+convert this string to a meaningful data structure such as a list or dict in Python.
 
-#Return values from Tcl are wrapped in *TclRemoteObjRef* objects. Passing a *TclRemoteObjRef* back to Tcl via *TclToolInterface* method calls causes the interpreter to use a reference that was maintained within the Tcl tool as argument, instead of passing a newly created string as argument. While this should not make a difference *in theory*, some Tcl-based tools rely on internal representations or object addresses of opaque handles to stay the same. A *TclRemoteObjRef* can be converted to a string via *str()*.
+Return values from Tcl are wrapped in *TclRemoteObjRef* objects. Passing a
+*TclRemoteObjRef* back to Tcl via *TclToolInterface* method calls causes the
+interpreter to use a reference that was maintained within the Tcl tool as
+argument, instead of passing a newly created string as argument. While this
+should not make a difference *in theory*, some Tcl-based tools rely on
+internal representations or object addresses of opaque handles to stay the same.
+A *TclRemoteObjRef* can be converted to a string via *str()*.
+"""
 
 class TclRemoteObjRef:
     """
@@ -66,17 +76,17 @@ class TclRemoteObjRef:
         """
         Wrapper for TclTool.proc_call for using TclRemoteObjRefs in an
         object-oriented way. Internally invoked; do not use directly.
-        """ 
-        if self.tool.called_object_pos == "first":
+        """
+        pos = self.tool.called_object_pos
+        if pos == "first":
             args = (name, ) + args
             name = self.ref_str()
-            # TODO: This is not tested yet.
-        if self.tool.called_object_pos == "second":
+        elif pos == "second":
             args = (self, ) + args
-        elif self.tool.called_object_pos == "last":
+        elif pos == "last":
             args = args + (self, )
         else:
-            assert False
+            raise ValueError('called_object_pos must be "first", "second" or "last".')
         return self.tool.proc_call(name, args, kwargs)
 
 # TODO: Is there a problem with escape_braces?

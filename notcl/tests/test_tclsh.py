@@ -1,4 +1,5 @@
 import pytest
+import subprocess
 from .. import TclTool, TclError
 
 class Tclsh(TclTool):
@@ -45,13 +46,20 @@ def test_dict():
         v=t.dict("merge", {"key1":"value1"}, {"key2":"value2", "key3":"value3"})
         assert str(v).split(" ") == ["key1", "value1", "key2", "value2", "key3", "value3"]
 
-def test_expr_log_commands_enabled(capsys):
-    with Tclsh(log_commands=True) as t:
+def test_expr_log_commands_fancy(capsys):
+    with Tclsh(log_commands=True, log_fancy=True) as t:
         v=t.expr(9, '+', 3, '*', 11)
         assert int(v) == 9+3*11
     cap = capsys.readouterr()
-    print(repr(cap.out))
     assert cap.out == "\x1b[93m[notcl]\x1b[0m Cmd:\x1b[0m expr {9} {+} {3} {*} {11}\n"
+    assert cap.err == ""
+
+def test_expr_log_commands_plain(capsys):
+    with Tclsh(log_commands=True, log_fancy=False) as t:
+        v=t.expr(9, '+', 3, '*', 11)
+        assert int(v) == 9+3*11
+    cap = capsys.readouterr()
+    assert cap.out == "[notcl] Cmd: expr {9} {+} {3} {*} {11}\n"
     assert cap.err == ""
 
 def test_expr_log_commands_disabled(capsys):
@@ -88,3 +96,50 @@ def test_tclerror():
 
         v=t.expr(1, '+', 1)
         assert int(v)==2
+
+def test_lists():
+    with Tclsh() as t:
+        ret = t.list(1,2,3)
+        assert str(ret) == '1 2 3'
+
+def test_boolargs():
+    with Tclsh() as t:
+        ret = t.list(myarg=True)
+        assert str(ret) == '-myarg'
+
+        ret = t.list(myarg=False)
+        assert str(ret) == ''
+
+def test_repr():
+    with Tclsh() as t:
+        ret = t.list("hello", "world")
+        assert repr(ret) == "Tcl'hello world'"
+
+def test_child_terminates_nonzero():
+    reaches1 = False
+    reaches2 = False
+    with pytest.raises(subprocess.CalledProcessError):
+        with Tclsh() as t:
+            reaches1 = True
+            v=t.exit(1)
+            reaches2 = True
+
+    assert reaches1
+    assert not reaches2
+
+def test_child_terminates_zero():
+    reaches1 = False
+    reaches2 = False
+    with pytest.raises(subprocess.CalledProcessError):
+        with Tclsh() as t:
+            reaches1 = True
+            v=t.exit(0)
+            reaches2 = True
+
+    assert reaches1
+    assert not reaches2
+
+def test_context_forwards_excepts():
+    with pytest.raises(ValueError):
+        with Tclsh() as t:
+            raise ValueError("test")  

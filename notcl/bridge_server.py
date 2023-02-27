@@ -74,7 +74,3 @@ class BridgeServer:
         cm = self.cm
         self.cm = None
         return cm.__exit__(exc_type, exc_value, traceback)
-
-
-if __name__ == "__main__":
-    test()
