@@ -80,7 +80,6 @@ def test_box_as_object():
         v = box1.unwrap_box()
         assert int(v) == 1234
 
-
 def test_called_object_pos():
     CustomTclsh.require()
 
@@ -102,5 +101,3 @@ def test_called_object_pos():
         l = t.list("list")
         v = l.mycmd('hello', 'world', whats="up")
         assert str(v) == '-whats up mycmd hello world'
-if __name__=="__main__":
-    test_tclsh()

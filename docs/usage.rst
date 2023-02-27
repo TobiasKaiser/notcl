@@ -63,7 +63,6 @@ Setting a keyword parameter to True omits its value in Tcl::
     t.myfunc("arg1", myflag=True)
     # resulting Tcl call: 'myfunc -myflag'
 
-
 Tcl return values in Python
 ---------------------------
 
