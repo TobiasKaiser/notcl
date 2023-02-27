@@ -45,26 +45,21 @@ def test_dict():
         v=t.dict("merge", {"key1":"value1"}, {"key2":"value2", "key3":"value3"})
         assert str(v).split(" ") == ["key1", "value1", "key2", "value2", "key3", "value3"]
 
-def test_expr_log_commands_plain(capsys):
-    with Tclsh(log_commands='plain') as t:
+def test_expr_log_commands_enabled(capsys):
+    with Tclsh(log_commands=True) as t:
         v=t.expr(9, '+', 3, '*', 11)
         assert int(v) == 9+3*11
     cap = capsys.readouterr()
-    assert cap.out==(
-        "[notcl] --> expr {9} {+} {3} {*} {11}\n"
-        "[notcl] <-- 42\n"
-    )
+    print(repr(cap.out))
+    assert cap.out == "\x1b[93m[notcl]\x1b[0m Cmd:\x1b[0m expr {9} {+} {3} {*} {11}\n"
     assert cap.err == ""
 
-def test_expr_log_commands_fancy(capsys):
-    with Tclsh(log_commands='fancy') as t:
+def test_expr_log_commands_disabled(capsys):
+    with Tclsh(log_commands=False) as t:
         v=t.expr(9, '+', 3, '*', 11)
         assert int(v) == 9+3*11
     cap = capsys.readouterr()
-    assert cap.out==(
-        "\x1b[1;46m[notcl]\x1b[0m \x1b[1;32m-->\x1b[0m expr {9} {+} {3} {*} {11}\x1b[0m\n"
-        "\x1b[1;46m[notcl]\x1b[0m \x1b[1;32m<--\x1b[0m 42\x1b[0m\n"
-    )
+    assert cap.out == ""
     assert cap.err == ""
 
 def test_explicit_ref():
