@@ -12,10 +12,10 @@ This software was developed during my doctoral studies at the Mixed Signal Circu
    :caption: Contents:
 
    usage
+   apps_examples
    motivation
    api_reference
    under_the_hood
-   compatibility
    tests
    known_issues
 
