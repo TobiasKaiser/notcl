@@ -81,7 +81,7 @@ namespace eval NoTcl {
         variable fn_tcl2py
         
         log "sendmsg: opening tcl2py pipe $fn_tcl2py to send message..."
-        set pipe [open $fn_tcl2py w]
+        set pipe [open $fn_tcl2py {WRONLY}]
         set first 1
         dict for {key value} $msg {
             if { ! $first } {

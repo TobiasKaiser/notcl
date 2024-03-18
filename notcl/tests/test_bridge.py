@@ -5,6 +5,7 @@ from ..bridge_server import BridgeServer
 from ..bridge_client import BridgeClient
 
 import threading
+import pytest
 from .. import msg_classes as msg
 from contextlib import contextmanager
 
@@ -15,19 +16,20 @@ def bridge_server_with_client():
         client_thread = threading.Thread(target=client.run)
         client_thread.start()
 
-        try:
-            yield bs
-        finally:
-            client_thread.join()
+        #try:
+        yield bs
+        #finally:
+        #    client_thread.join()
 
+#@pytest.mark.skip(reason="Threads and signals problem")
 def test_bridge_server_client():
     with bridge_server_with_client() as bs:
-        r=bs.recv(msg.TclHello)
+        r=bs.recv(msg.TclHello, None)
         print(f"received {r}")
         
         for cmd in ["abc", "Defgh", "Guten Tag"]:
             bs.send(msg.PyProcedureCall(command=cmd))
-            resp=bs.recv(msg.TclProcedureResult)
+            resp=bs.recv(msg.TclProcedureResult, None)
             print(f"received {resp}")
             assert resp.result == cmd.upper()
         bs.send(msg.PyExit())

@@ -15,7 +15,7 @@ from . import tclobj
 from . import msg_classes as msg
 
 from .tclobj import TclRemoteObjRef
-from .bridge_server import BridgeServer
+from .bridge_server import BridgeServer, ChildEarlyExit
 
 class ANSITerm:
     FgBrightYellow = "\x1b[93m"
@@ -35,16 +35,6 @@ class TclError(Exception):
 
     def __str__(self):
         return self.text
-
-class ChildProcessExited(Exception):
-    """
-    This exception is raised on abnormal / early termination of the Tcl child
-    process through TclTool._sigchld_handler. It interrupts the
-    current TclTool context. It is caught in TclTool.contextmanager.
-    Typically, TclTool.contextmanager will then raise a subprocess.CalledProcessError
-    based on the child's return code.
-    """
-    pass
 
 
 class TclTool(ABC):
@@ -83,6 +73,7 @@ class TclTool(ABC):
         self.debug_tcl=debug_tcl
         self.debug_py=debug_py
         self.abort_on_error = abort_on_error
+        self.proc = None
 
         self.cm = None
         
@@ -128,14 +119,6 @@ class TclTool(ABC):
         """
         if self.debug_py:
             print(f"[notcl] Python: {message}")
-
-    def _sigchld_handler(self, sig, frame):
-        """
-        Called when child process exists, vis SIGHCLD Unix signal.
-        This will typically interrupt the open() call in BridgeServer.recv_raw.
-        """
-        self.debug_log("Received SIGCHLD (child process terminated)")
-        raise ChildProcessExited()
             
 
     @contextmanager
@@ -146,68 +129,52 @@ class TclTool(ABC):
         invoked and managed internally by __enter__ and __exit__;
         not normally used externally.
         """
-        cmdline = self.cmdline()
+
+        child_exited_early = False
         
         with BridgeServer(custom_log_func=self.debug_log) as self.bs:
-            
             env = self.env()
             cwd = self.cwd
-            
-            signal.signal(signal.SIGCHLD, self._sigchld_handler)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            
-            self.proc = subprocess.Popen(cmdline, cwd=cwd, env=env)
-            
-            clean_exit = True
+
+            self.proc = subprocess.Popen(self.cmdline(), cwd=cwd, env=env)
 
             if self.interact:
                 quit = '0'
             else:
                 quit = '1'
 
+            self.hello=self.bs.recv(msg.TclHello, self.proc)
+            self.debug_log(f"Received TclHello: {self.hello}")
+
             try:
-                self.hello=self.bs.recv(msg.TclHello)
-                self.debug_log(f"Received TclHello: {self.hello}")
-                try:
-                    yield TclToolInterface(self)
-                except ChildProcessExited:
-                    clean_exit = False
-                except:
-                    self.debug_log("Caught exception in TclTool context.")
-                    if self.abort_on_error:
-                        quit = '1'
-                    else:
-                        s = traceback.format_exc()
-                        self.log("error",
-                            "Following exception is held back and will be raised "
-                            f"once the Tcl child process exists:\n{s}")
-                    raise
-            
-                finally:
-                    if clean_exit:
-                        self.debug_log("Sending PyExit")
-                        
-                        if quit == '0':
-                            self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
-                        self.bs.send(msg.PyExit(quit=quit))
-            except:    
+                yield TclToolInterface(self)
+            except Exception as e:
+                if isinstance(e, ChildEarlyExit):
+                    child_exited_early = True
+                self.debug_log("Caught exception in TclTool context.")
+                if self.abort_on_error:
+                    quit = '1'
+                else:
+                    s = traceback.format_exc()
+                    self.log("error",
+                        "Following exception is held back and will be raised "
+                        f"once the Tcl child process exists:\n{s}")
                 raise
             finally:
-                # TODO: There is at least one unhandled race condition here:
-                # What if we receive SIGCHLD before the signal handler is disabled?
+                if not child_exited_early:
+                    self.debug_log("Sending PyExit")
 
-                signal.signal(signal.SIGCHLD, signal.SIG_IGN)
-                signal.signal(signal.SIGINT, signal.SIG_DFL)
-                
-                self.debug_log("TclTool context finished, waiting for child process to terminate.")
-                rc = self.proc.wait()
+                    if quit == '0':
+                        self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
+                    self.bs.send(msg.PyExit(quit=quit))
+        
+                    rc = self.proc.wait()
+                    self.debug_log("TclTool context finished, waiting for child process to terminate.")
 
-                if rc==0 and clean_exit:
-                    self.debug_log("Child process terminated with return code {rc}.")
-                else:
-                    self.debug_log("Child process terminated with abnormal return code {rc}.")
-                    # If clean_exit is False, CalledProcessError is raised even though rc might be 0.
-                    raise subprocess.CalledProcessError(rc, cmdline)
+                    if rc==0:
+                        self.debug_log(f"Child process terminated with return code {rc}.")
+                    else:
+                        self.debug_log(f"Child process terminated with abnormal return code {rc}.")
 
     def __enter__(self):
         assert self.cm == None
@@ -290,8 +257,18 @@ class TclTool(ABC):
         Low-level method that passes a string to Tcl for evaluation.
         """
         self.log("command", cmd)
+
+
+
+        #signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        #signal.signal(signal.SIGINT, signal.SIG_DFL)
+
         self.bs.send(msg.PyProcedureCall(command=cmd))
-        r_msg = self.bs.recv(msg.TclProcedureResult)
+        r_msg = self.bs.recv(msg.TclProcedureResult, self.proc)
+
+        #signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        #signal.signal(signal.SIGINT, signal.SIG_DFL)
+
         cmd_idx = int(r_msg.cmd_idx)
         err_code = int(r_msg.err_code)
         
