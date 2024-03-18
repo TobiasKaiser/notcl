@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024 Tobias Kaiser <mail@tb-kaiser.de>
+# SPDX-License-Identifier: Apache-2.0
+
 import re
 from base64 import b64encode, b64decode
 import socket

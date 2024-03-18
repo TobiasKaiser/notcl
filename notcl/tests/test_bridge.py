@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024 Tobias Kaiser <mail@tb-kaiser.de>
+# SPDX-License-Identifier: Apache-2.0
+
 from ..bridge_server import BridgeServer
 from ..bridge_client import BridgeClient
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024 Tobias Kaiser <mail@tb-kaiser.de>
+# SPDX-License-Identifier: Apache-2.0
+
 from .message import RawMessage, Message, WrongMessageClass
 from . import msg_classes as msg
 

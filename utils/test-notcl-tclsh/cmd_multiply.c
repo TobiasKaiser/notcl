@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2024 Tobias Kaiser <mail@tb-kaiser.de>
+// SPDX-License-Identifier: Apache-2.0
+
 #include <tcl/tcl.h>
 
 int cmd_multiply(ClientData cd, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]) {

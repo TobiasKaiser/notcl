@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024 Tobias Kaiser <mail@tb-kaiser.de>
+# SPDX-License-Identifier: Apache-2.0
+
 # base64::encode and base64::decode are used instead of "binary encode base64"
 # and "binary decode base64" for Tcl 8.5 (?) support.
 namespace eval NoTcl {

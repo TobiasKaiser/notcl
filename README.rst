@@ -29,6 +29,6 @@ Full documentation is found at https://notcl.readthedocs.io or in the *docs/* fo
 License
 -------
 
-Copyright 2022 Tobias Kaiser
+Copyright 2022 - 2024 Tobias Kaiser
 
 SPDX-License-Identifier: Apache-2.0
