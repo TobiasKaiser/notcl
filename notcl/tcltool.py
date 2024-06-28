@@ -4,7 +4,6 @@
 import os
 import traceback
 import subprocess
-import pkg_resources
 import signal
 from typing import Literal, Union, Optional
 from abc import ABC, abstractmethod
@@ -108,7 +107,7 @@ class TclTool(ABC):
         Returns:
             Filename of notcl.tcl file
         """
-        return pkg_resources.resource_filename(__name__, "notcl.tcl")
+        return str(Path(__file__).parent / "notcl.tcl")
 
 
     def env(self) -> dict[str, str]:
