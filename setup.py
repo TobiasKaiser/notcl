@@ -19,7 +19,7 @@ setuptools.setup(
         "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
         "License :: OSI Approved :: Apache Software License",
     ],
-    python_requires='>=3.8',
+    python_requires='>=3.9',
     entry_points={
     }
 )

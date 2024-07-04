@@ -104,3 +104,13 @@ def test_called_object_pos():
         l = t.list("list")
         v = l.mycmd('hello', 'world', whats="up")
         assert str(v) == '-whats up mycmd hello world'
+
+
+def test_cmdline():
+    CustomTclsh.require()
+
+    t_proto = CustomTclsh()
+
+    assert t_proto.cmdline() == ['test-notcl-tclsh', '<placeholder for notcl.tcl>']
+    with CustomTclsh() as t:
+        assert t_proto.cmdline() == ['test-notcl-tclsh', '<placeholder for notcl.tcl>']

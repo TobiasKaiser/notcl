@@ -4,14 +4,14 @@
 import os
 import traceback
 import subprocess
-import pkg_resources
+import importlib
 import signal
 from typing import Literal, Union, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
 from contextlib import contextmanager
 
-from . import tclobj
+from . import tclobj, tcl
 from . import msg_classes as msg
 
 from .tclobj import TclRemoteObjRef
@@ -83,7 +83,7 @@ class TclTool(ABC):
         self.debug_tcl=debug_tcl
         self.debug_py=debug_py
         self.abort_on_error = abort_on_error
-
+        self._script_name = None
         self.cm = None
         
         if not cwd:
@@ -106,10 +106,17 @@ class TclTool(ABC):
     def script_name(self) -> str:
         """
         Returns:
-            Filename of notcl.tcl file
+            Filename of notcl.tcl file. Outside of the TclTool.mdline() call
+            by TclTool.contextmanager, a placeholder string is retuned.
         """
-        return pkg_resources.resource_filename(__name__, "notcl.tcl")
-
+        # This used to be a call to pkg_resources. After migration to
+        # importlib.resources, this now is only a wratter to get a value
+        # passed from contextmanager(self), which obtains it as context
+        # from importlib.resources.as_file.
+        if self._script_name==None:
+            return "<placeholder for notcl.tcl>"
+        else:
+            return self._script_name
 
     def env(self) -> dict[str, str]:
         """
@@ -146,9 +153,17 @@ class TclTool(ABC):
         invoked and managed internally by __enter__ and __exit__;
         not normally used externally.
         """
-        cmdline = self.cmdline()
-        
-        with BridgeServer(custom_log_func=self.debug_log) as self.bs:
+
+        with BridgeServer(custom_log_func=self.debug_log) as self.bs,\
+            importlib.resources.as_file(importlib.resources.files(tcl).joinpath("notcl.tcl")) as script_name:
+
+            try:
+                self._script_name = script_name
+                cmdline = self.cmdline()
+            finally:
+                # Clear self._script_name to make sure it never contains an invalid
+                # invalid path (after leaving the script_name context here):
+                self._script_name = None
             
             env = self.env()
             cwd = self.cwd
