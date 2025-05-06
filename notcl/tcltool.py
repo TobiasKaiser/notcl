@@ -4,7 +4,7 @@
 import os
 import traceback
 import subprocess
-import importlib
+import importlib.resources
 import signal
 from typing import Literal, Union, Optional
 from abc import ABC, abstractmethod
