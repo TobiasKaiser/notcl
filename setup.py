@@ -3,10 +3,11 @@
 
 import setuptools
 
+exec(open('notcl/version.py').read()) # --> __version__
 
 setuptools.setup(
     name="notcl",
-    version="0.3.3",
+    version=__version__,
     author="Tobias Kaiser",
     author_email="mail@tb-kaiser.de",
     description="Replace Tcl scripting with Python",
