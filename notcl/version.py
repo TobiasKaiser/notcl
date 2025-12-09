@@ -1,4 +1,9 @@
 # SPDX-FileCopyrightText: 2025 Tobias Kaiser <mail@tb-kaiser.de>
 # SPDX-License-Identifier: Apache-2.0
 
-__version__ = '0.3.4'
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    version = version("notcl")
+except PackageNotFoundError:
+    version = "unknown"

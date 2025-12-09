@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2025 Tobias Kaiser <mail@tb-kaiser.de>
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+dynamic = ["version"]
+name = "notcl"
+maintainers = [
+  {name = "Tobias Kaiser", email = "mail@tb-kaiser.de"}
+]
+description = "Replace Tcl scripting with Python"
+readme = "README.rst"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Tcl",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+dependencies = [
+]
+license = "Apache-2.0"
+license-files = [
+    "LICENSE",
+]
+
+[project.urls]
+Homepage = "https://github.com/TobiasKaiser/notcl"
+Documentation = "https://notcl.readthedocs.io"
+
+[tool.setuptools]
+packages = [
+    "notcl",
+    "notcl.apps",
+    "notcl.tcl",
+    "notcl.tests",
+]
+
+[tool.setuptools.package-data]
+"notcl.tcl" = ["*.tcl"]
+
+[tool.setuptools_scm]
+version_scheme = "release-branch-semver"
