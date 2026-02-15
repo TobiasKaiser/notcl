@@ -3,7 +3,6 @@
 
 import re
 from base64 import b64encode, b64decode
-import socket
 
 class RawMessage(dict):
     """Keys can only contain a-z, A-Z and underscores.
@@ -28,15 +27,12 @@ class RawMessage(dict):
     def send_to_pipe(self, f_out):
         msg_list = []
         for key, value in self.items():
-            if not re.fullmatch("[a-zA-Z_+]*", key):
+            if not re.fullmatch("[a-zA-Z_]+", key):
                 raise ValueError(f"Messages keys can only contain a-z, A-Z and underscores, got '{key}'")
             msg_list.append(key.encode("ascii"))
             msg_list.append(b64encode(value.encode("utf8")))
         f_out.write(b"\n".join(msg_list))
         f_out.flush()
-
-    def decode(self, msg_classes):
-        pass
 
     def to_message(self, permitted_msg_classes):
         """Converts RawMessage to Message.
@@ -44,6 +40,12 @@ class RawMessage(dict):
         if isinstance(permitted_msg_classes, type):
             permitted_msg_classes = (permitted_msg_classes, )
 
+        # Dispatch by trying each class: Message.__init__ raises
+        # WrongMessageClass when the "class" field doesn't match,
+        # so we catch it and try the next candidate. Other errors
+        # (e.g. ValueError from keys_required validation) propagate
+        # immediately since those indicate a malformed message, not
+        # a class mismatch.
         for cls in permitted_msg_classes:
             try:
                 return cls(self)
@@ -55,8 +57,7 @@ class WrongMessageClass(Exception):
     pass
 
 class Message:
-    """Overwrite keys_optional and keys_required in subclasses."""
-    keys_optional = []
+    """Overwrite keys_required in subclasses."""
     keys_required = []
 
     __slots__=("_data",)
@@ -72,6 +73,10 @@ class Message:
         else:
             self._data = dict(kwargs)
             self._data["class"] = self.__class__.__name__
+
+        for key in self.keys_required:
+            if key not in self._data:
+                raise ValueError(f"{self.__class__.__name__} missing required key '{key}'")
 
     def to_raw_message(self):
         return RawMessage(self._data)

@@ -38,4 +38,4 @@ def test_bridge_server_client():
             resp=bs.recv(msg.TclProcedureResult)
             print(f"received {resp}")
             assert resp.result == cmd.upper()
-        bs.send(msg.PyExit())
+        bs.send(msg.PyExit(quit='1'))

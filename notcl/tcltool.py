@@ -29,7 +29,7 @@ class TclError(Exception):
     TclTool remains usable.
     """
     def __init__(self, text: str):
-        super().__init__()
+        super().__init__(text)
         self.text = text
 
     def __str__(self):
@@ -172,7 +172,7 @@ class TclTool(ABC):
                 except ChildProcessEarlyExit:
                     child_exited_early = True
                     raise
-                except:
+                except Exception:
                     self.debug_log("Caught exception in TclTool context.")
                     if self.abort_on_error:
                         quit = True

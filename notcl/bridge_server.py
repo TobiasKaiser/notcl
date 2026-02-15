@@ -12,7 +12,7 @@ import struct
 import select
 import termios
 
-from .message import RawMessage, Message, WrongMessageClass
+from .message import RawMessage, Message
 
 
 class ChildProcessEarlyExit(Exception):

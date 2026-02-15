@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2024 Tobias Kaiser <mail@tb-kaiser.de>
 # SPDX-License-Identifier: Apache-2.0
 
-from .message import RawMessage, Message, WrongMessageClass
+from .message import RawMessage, Message
 from . import msg_classes as msg
 
 class BridgeClient:
@@ -24,7 +24,12 @@ class BridgeClient:
         return raw_message.to_message(permitted_msg_classes)
 
     def run(self):
-        self.send(msg.TclHello(nameofexecutable="dummy_client"))
+        self.send(msg.TclHello(
+            nameofexecutable="dummy_client",
+            patchlevel="0.0",
+            commands="",
+            globals="",
+        ))
 
         while True:
             m_recv = self.recv([msg.PyProcedureCall, msg.PyExit]) 
@@ -32,6 +37,6 @@ class BridgeClient:
                 break
             elif isinstance(m_recv, msg.PyProcedureCall):
                 result = m_recv.command.upper()
-                self.send(msg.TclProcedureResult(result=result, err_code="0"))
+                self.send(msg.TclProcedureResult(result=result, err_code="0", cmd_idx="0"))
             else:
                 raise Exception(f"Unexpected message: {m_recv}")

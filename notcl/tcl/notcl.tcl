@@ -21,6 +21,7 @@ namespace eval NoTcl {
     variable base64_impl
     variable fn_py2tcl
     variable fn_tcl2py
+    variable fn_sentinel
 
     if {[catch {package require base64}]} {
         # Error thrown - package not found.
