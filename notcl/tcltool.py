@@ -5,7 +5,6 @@ import os
 import traceback
 import subprocess
 import importlib.resources
-import signal
 from typing import Literal, Union, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -15,7 +14,7 @@ from . import tclobj, tcl
 from . import msg_classes as msg
 
 from .tclobj import TclRemoteObjRef
-from .bridge_server import BridgeServer
+from .bridge_server import BridgeServer, ChildProcessEarlyExit
 
 class ANSITerm:
     FgBrightYellow = "\x1b[93m"
@@ -36,24 +35,14 @@ class TclError(Exception):
     def __str__(self):
         return self.text
 
-class ChildProcessExited(Exception):
-    """
-    This exception is raised on abnormal / early termination of the Tcl child
-    process through TclTool._sigchld_handler. It interrupts the
-    current TclTool context. It is caught in TclTool.contextmanager.
-    Typically, TclTool.contextmanager will then raise a subprocess.CalledProcessError
-    based on the child's return code.
-    """
-    pass
-
 
 class TclTool(ABC):
     called_object_pos = "second"
     """
     Used in TclRemoteObjRef.proc_call, specifying the invokation style for
     TclRemoteObjRef methods. Can be overwritten in subclasses.
-    Must be 'first', 'second' oder 'last' (see TclRemoteObjRef.proc_call). 
-    """ 
+    Must be 'first', 'second' oder 'last' (see TclRemoteObjRef.proc_call).
+    """
 
     def __init__(self, cwd:Optional[Union[Path, str]]=None, interact:bool=False,
             log_commands:bool=True, log_retvals:bool=False, log_fancy:bool=True,
@@ -100,17 +89,17 @@ class TclTool(ABC):
             to the executable. The subsequent list of arguments should be set
             in such a way that the Tcl script returned by self.script_name() is
             executed at startup of the invoked Tcl tool.
-        """ 
+        """
         pass
 
     def script_name(self) -> str:
         """
         Returns:
-            Filename of notcl.tcl file. Outside of the TclTool.mdline() call
-            by TclTool.contextmanager, a placeholder string is retuned.
+            Filename of notcl.tcl file. Outside of the TclTool.cmdline() call
+            by TclTool.contextmanager, a placeholder string is returned.
         """
         # This used to be a call to pkg_resources. After migration to
-        # importlib.resources, this now is only a wratter to get a value
+        # importlib.resources, this now is only a wrapper to get a value
         # passed from contextmanager(self), which obtains it as context
         # from importlib.resources.as_file.
         if self._script_name==None:
@@ -126,24 +115,17 @@ class TclTool(ABC):
         env = os.environ.copy()
         env["NOTCL_PIPE_TCL2PY"]=self.bs.fn_tcl2py
         env["NOTCL_PIPE_PY2TCL"]=self.bs.fn_py2tcl
+        env["NOTCL_PIPE_SENTINEL"]=self.bs.fn_sentinel
         env["NOTCL_DEBUG_TCL"]=("1" if self.debug_tcl else "0")
         return env
 
     def debug_log(self, message:str):
         """
-        Prints debug message, if debug output is enabled by debug_py flag. 
+        Prints debug message, if debug output is enabled by debug_py flag.
         """
         if self.debug_py:
             print(f"[notcl] Python: {message}")
 
-    def _sigchld_handler(self, sig, frame):
-        """
-        Called when child process exists, vis SIGHCLD Unix signal.
-        This will typically interrupt the open() call in BridgeServer.recv_raw.
-        """
-        self.debug_log("Received SIGCHLD (child process terminated)")
-        raise ChildProcessExited()
-            
 
     @contextmanager
     def contextmanager(self):
@@ -153,6 +135,8 @@ class TclTool(ABC):
         invoked and managed internally by __enter__ and __exit__;
         not normally used externally.
         """
+
+        child_exited_early = False
 
         with BridgeServer(custom_log_func=self.debug_log) as self.bs,\
             importlib.resources.as_file(importlib.resources.files(tcl).joinpath("notcl.tcl")) as script_name:
@@ -164,16 +148,18 @@ class TclTool(ABC):
                 # Clear self._script_name to make sure it never contains an invalid
                 # invalid path (after leaving the script_name context here):
                 self._script_name = None
-            
+
             env = self.env()
             cwd = self.cwd
-            
-            signal.signal(signal.SIGCHLD, self._sigchld_handler)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            
+
             self.proc = subprocess.Popen(cmdline, cwd=cwd, env=env)
-            
-            clean_exit = True
+
+            # Open sentinel read end early (before TclHello) so the Tcl
+            # side's blocking WRONLY open on the sentinel FIFO can proceed.
+            # O_NONBLOCK means this open returns immediately even without
+            # a writer; the sentinel fd will show premature EOF until the
+            # child connects, which recv_raw handles via FIONREAD.
+            self.bs.open_sentinel()
 
             if self.interact:
                 quit = '0'
@@ -181,12 +167,14 @@ class TclTool(ABC):
                 quit = '1'
 
             try:
-                self.hello=self.bs.recv(msg.TclHello)
+                self.hello = self.bs.recv(msg.TclHello)
                 self.debug_log(f"Received TclHello: {self.hello}")
+
                 try:
                     yield TclToolInterface(self)
-                except ChildProcessExited:
-                    clean_exit = False
+                except ChildProcessEarlyExit:
+                    child_exited_early = True
+                    raise
                 except:
                     self.debug_log("Caught exception in TclTool context.")
                     if self.abort_on_error:
@@ -197,31 +185,26 @@ class TclTool(ABC):
                             "Following exception is held back and will be raised "
                             f"once the Tcl child process exists:\n{s}")
                     raise
-            
-                finally:
-                    if clean_exit:
-                        self.debug_log("Sending PyExit")
-                        
-                        if quit == '0':
-                            self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
-                        self.bs.send(msg.PyExit(quit=quit))
-            except:    
+            except ChildProcessEarlyExit:
+                child_exited_early = True
                 raise
             finally:
-                # TODO: There is at least one unhandled race condition here:
-                # What if we receive SIGCHLD before the signal handler is disabled?
+                if not child_exited_early:
+                    self.debug_log("Sending PyExit")
 
-                signal.signal(signal.SIGCHLD, signal.SIG_IGN)
-                signal.signal(signal.SIGINT, signal.SIG_DFL)
-                
+                    if quit == '0':
+                        self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
+                    self.bs.send(msg.PyExit(quit=quit))
+
                 self.debug_log("TclTool context finished, waiting for child process to terminate.")
                 rc = self.proc.wait()
 
-                if rc==0 and clean_exit:
-                    self.debug_log("Child process terminated with return code {rc}.")
+                if child_exited_early:
+                    self.debug_log(f"Child exited early with return code {rc}.")
+                elif rc == 0:
+                    self.debug_log(f"Child process terminated with return code {rc}.")
                 else:
-                    self.debug_log("Child process terminated with abnormal return code {rc}.")
-                    # If clean_exit is False, CalledProcessError is raised even though rc might be 0.
+                    self.debug_log(f"Child process terminated with abnormal return code {rc}.")
                     raise subprocess.CalledProcessError(rc, cmdline)
 
     def __enter__(self):
@@ -257,7 +240,7 @@ class TclTool(ABC):
             else:
                 full_cmd.append("-"+k)
                 full_cmd.append(tclobj.encode(v))
-        
+
         for arg in args:
             full_cmd.append(tclobj.encode(arg))
 
@@ -297,7 +280,7 @@ class TclTool(ABC):
                 style_symbol = ANSITerm.BgRed
             elif log_type=="info":
                 style_symbol = ANSITerm.BgGreen
-        
+
         print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}")
 
     def eval(self, cmd: str) -> TclRemoteObjRef:
@@ -309,14 +292,14 @@ class TclTool(ABC):
         r_msg = self.bs.recv(msg.TclProcedureResult)
         cmd_idx = int(r_msg.cmd_idx)
         err_code = int(r_msg.err_code)
-        
+
         if err_code:
             self.log("error", f"{r_msg.result}")
             raise TclError(r_msg.result)
         else:
             self.log("retval", r_msg.result)
             return TclRemoteObjRef(self, cmd_idx, r_msg.result, cmd)
-        
+
 
 class TclToolInterface:
     """
@@ -333,7 +316,7 @@ class TclToolInterface:
 
     def __getattr__(self, name):
         """
-        For every unknown attribute, a method is returned that that calls the 
+        For every unknown attribute, a method is returned that that calls the
         Tcl command or procedure of corresponding name.
 
         Example use for a TclToolInterface t, in which the method returned by

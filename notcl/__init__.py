@@ -2,4 +2,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .tcltool import TclTool, TclError
+from .bridge_server import ChildProcessEarlyExit
 from .version import version as __version__

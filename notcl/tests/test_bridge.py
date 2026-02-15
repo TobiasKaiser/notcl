@@ -4,6 +4,7 @@
 from ..bridge_server import BridgeServer
 from ..bridge_client import BridgeClient
 
+import os
 import threading
 from .. import msg_classes as msg
 from contextlib import contextmanager
@@ -11,6 +12,12 @@ from contextlib import contextmanager
 @contextmanager
 def bridge_server_with_client():
     with BridgeServer() as bs:
+        # Open the sentinel read end (for BridgeServer to monitor) and write
+        # end (simulating a child process). Read end first, since O_WRONLY |
+        # O_NONBLOCK on a FIFO fails with ENXIO if there's no reader.
+        bs.open_sentinel()
+        sentinel_w = os.open(bs.fn_sentinel, os.O_WRONLY | os.O_NONBLOCK)
+
         client = BridgeClient(fn_tcl2py=bs.fn_tcl2py, fn_py2tcl=bs.fn_py2tcl)
         client_thread = threading.Thread(target=client.run)
         client_thread.start()
@@ -18,6 +25,7 @@ def bridge_server_with_client():
         try:
             yield bs
         finally:
+            os.close(sentinel_w)
             client_thread.join()
 
 def test_bridge_server_client():

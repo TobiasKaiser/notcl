@@ -3,7 +3,7 @@
 
 import pytest
 import subprocess
-from .. import TclTool, TclError
+from .. import TclTool, TclError, ChildProcessEarlyExit
 
 class Tclsh(TclTool):
     def cmdline(self):
@@ -121,7 +121,7 @@ def test_repr():
 def test_child_terminates_nonzero():
     reaches1 = False
     reaches2 = False
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(ChildProcessEarlyExit):
         with Tclsh() as t:
             reaches1 = True
             v=t.exit(1)
@@ -133,7 +133,7 @@ def test_child_terminates_nonzero():
 def test_child_terminates_zero():
     reaches1 = False
     reaches2 = False
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(ChildProcessEarlyExit):
         with Tclsh() as t:
             reaches1 = True
             v=t.exit(0)

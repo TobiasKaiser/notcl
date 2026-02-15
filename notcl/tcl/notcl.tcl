@@ -8,6 +8,7 @@ namespace eval NoTcl {
 
     set fn_tcl2py $env(NOTCL_PIPE_TCL2PY)
     set fn_py2tcl $env(NOTCL_PIPE_PY2TCL)
+    set fn_sentinel $env(NOTCL_PIPE_SENTINEL)
 
     if $env(NOTCL_DEBUG_TCL) {
         proc log {message} {
@@ -81,7 +82,7 @@ namespace eval NoTcl {
         variable fn_tcl2py
         
         log "sendmsg: opening tcl2py pipe $fn_tcl2py to send message..."
-        set pipe [open $fn_tcl2py w]
+        set pipe [open $fn_tcl2py {WRONLY}]
         set first 1
         dict for {key value} $msg {
             if { ! $first } {
@@ -188,6 +189,11 @@ namespace eval NoTcl {
     }
 
     proc main {} {
+        global env
+        variable fn_sentinel
+        # Open sentinel pipe - kept open for lifetime of process.
+        # Python side detects child termination when this pipe reaches EOF.
+        set sentinel [open $fn_sentinel {WRONLY}]
         NoTcl::send_hello
         if { [ NoTcl::comm_loop ] } {
             exit
