@@ -17,9 +17,28 @@ from .message import RawMessage, Message
 
 class ChildProcessEarlyExit(Exception):
     """
-    Raised when the Tcl child process terminates unexpectedly (before the
-    TclTool context exits normally). Detected via a sentinel named pipe that
-    becomes readable (EOF) when the child process dies.
+    Exception raised when the Tcl subprocess terminates unexpectedly.
+
+    This exception is raised when the Tcl child process exits before the
+    TclTool context manager exits normally. This can happen if:
+
+    - The Tcl process crashes
+    - The Tcl process calls exit explicitly
+    - The Tcl process is killed by a signal
+
+    NoTcl detects early termination via a sentinel named pipe that becomes
+    readable (EOF) when the child process dies.
+
+    Example::
+
+        from notcl import ChildProcessEarlyExit
+
+        try:
+            with Tclsh() as t:
+                t.exit(0)  # Tcl process terminates
+                t.expr(1, "+", 1)  # Never reached
+        except ChildProcessEarlyExit:
+            print("Tcl process exited early")
     """
     pass
 

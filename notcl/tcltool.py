@@ -24,9 +24,26 @@ class ANSITerm:
 
 class TclError(Exception):
     """
-    Errors in Tcl are forwarded to Python and raised in the form of a TclError
-    exception. TclErrors can be caught and handled in Python. The corresponding
-    TclTool remains usable.
+    Exception raised when a Tcl command fails.
+
+    When a Tcl command returns an error (non-zero error code), NoTcl raises
+    a TclError with the Tcl error message. The TclTool remains usable after
+    catching the exception.
+
+    Attributes:
+        text: The Tcl error message.
+
+    Example::
+
+        from notcl import TclError
+
+        with Tclsh() as t:
+            try:
+                t.expr("invalid syntax")
+            except TclError as e:
+                print(f"Tcl error: {e}")
+            # Tool is still usable
+            result = t.expr(1, "+", 1)
     """
     def __init__(self, text: str):
         super().__init__(text)
@@ -37,6 +54,35 @@ class TclError(Exception):
 
 
 class TclTool(ABC):
+    """
+    Base class for wrapping Tcl-based tools as Python interfaces.
+
+    TclTool spawns a Tcl tool as a subprocess and communicates with it via
+    named pipes. Subclasses must implement the ``cmdline()`` method to specify
+    how to invoke the tool.
+
+    Example::
+
+        from notcl import TclTool
+
+        class Tclsh(TclTool):
+            def cmdline(self):
+                return ["tclsh", self.script_name()]
+
+        with Tclsh() as t:
+            result = t.expr(3, "*", 5)
+            print(result)  # 15
+
+    The tool is used as a context manager. On entry, the subprocess is spawned
+    and a communication channel is established. On exit, the tool is terminated
+    (unless ``interact=True``).
+
+    All Tcl commands and procedures become callable as methods on the
+    TclToolInterface object yielded by the context manager. Return values are
+    wrapped in TclRemoteObjRef objects that preserve opaque handles when passed
+    back to Tcl.
+    """
+
     called_object_pos = "second"
     """
     Used in TclRemoteObjRef.proc_call, specifying the invokation style for
@@ -48,21 +94,23 @@ class TclTool(ABC):
             log_commands:bool=True, log_retvals:bool=False, log_fancy:bool=True,
             debug_tcl:bool=False, debug_py:bool=False, abort_on_error:bool=True):
         """
+        Initialize the TclTool.
+
         Args:
-            cwd: Directory in which to Tcl-based tool is run.
-            interact: If set to True, the Tcl-based tool will not be terminated
-                at the end of the with block. Instead, the Tcl tool remains open
-                for the user to interact with. In this case, the Python script
-                will wait for the user to close the tool manually before continuing.
-            logs: Enables printing all commands sent to the Tcl tool.
-            log_retvals: Enables printing of all return values received from Tcl tool.
-            log_fancy: Enables colorful printing of commands, return values and
-                errors using ANSI escape sequences.
-            debug_tcl: Enable detailed debug output by the Tcl script running in
-                the Tcl tool.
-            debug_py: Enable detailed debug output for Python side.
-            abort_on_error: Terminate child process when a Tcl error occured, even
-                if interact is set to True.
+            cwd: Working directory for the Tcl tool subprocess. Defaults to the
+                current working directory.
+            interact: If True, keep the Tcl tool open for interactive use after
+                the with block exits. The Python script waits for manual
+                termination. Default: False.
+            log_commands: Print all Tcl commands sent to the tool to stdout.
+                Default: True.
+            log_retvals: Print all return values received from Tcl to stdout.
+                Default: False.
+            log_fancy: Use ANSI color codes in log output. Default: True.
+            debug_tcl: Enable detailed debug output from the Tcl side. Default: False.
+            debug_py: Enable detailed debug output from the Python side. Default: False.
+            abort_on_error: Terminate the child process when a Tcl error occurs,
+                even if interact=True. Default: True.
         """
 
         self.interact = interact
@@ -83,20 +131,38 @@ class TclTool(ABC):
     @abstractmethod
     def cmdline(self) -> list[str]:
         """
+        Return the command line for invoking the Tcl tool.
+
+        Subclasses must implement this method to specify how to start the tool.
+        The returned list is passed to subprocess.Popen.
+
         Returns:
-            A list of strings that is passed to subprocess.Popen for invoking
-            the Tcl tool. The first list element is the program name or full path
-            to the executable. The subsequent list of arguments should be set
-            in such a way that the Tcl script returned by self.script_name() is
-            executed at startup of the invoked Tcl tool.
+            List of strings where the first element is the executable name or path,
+            and subsequent elements are command line arguments. The tool must be
+            configured to execute the script returned by self.script_name() at
+            startup.
+
+        Example::
+
+            def cmdline(self):
+                return ["tclsh", self.script_name()]
         """
         pass
 
     def script_name(self) -> str:
         """
+        Return the path to the NoTcl communication script.
+
+        This method should be called from cmdline() to get the path to the
+        notcl.tcl script that the tool must execute at startup.
+
         Returns:
-            Filename of notcl.tcl file. Outside of the TclTool.cmdline() call
-            by TclTool.contextmanager, a placeholder string is returned.
+            Path to the notcl.tcl script when called during cmdline() execution.
+            Returns a placeholder string at other times.
+
+        Note:
+            The path is only valid while cmdline() is being executed. Do not
+            cache or store this value.
         """
         # This used to be a call to pkg_resources. After migration to
         # importlib.resources, this now is only a wrapper to get a value
@@ -285,7 +351,19 @@ class TclTool(ABC):
 
     def eval(self, cmd: str) -> TclRemoteObjRef:
         """
-        Low-level method that passes a string to Tcl for evaluation.
+        Evaluate a Tcl command string directly.
+
+        This is a low-level method. Prefer using the method call syntax on
+        TclToolInterface (e.g., t.expr(3, "*", 5)) for most use cases.
+
+        Args:
+            cmd: Tcl command string to evaluate.
+
+        Returns:
+            TclRemoteObjRef wrapping the return value.
+
+        Raises:
+            TclError: If the Tcl command fails.
         """
         self.log("command", cmd)
         self.bs.send(msg.PyProcedureCall(command=cmd))
@@ -303,36 +381,66 @@ class TclTool(ABC):
 
 class TclToolInterface:
     """
-    Entering a with block using a TclTool yields a TclToolInterface.
+    Interface for calling Tcl commands as Python methods.
+
+    TclToolInterface is yielded when entering a TclTool context. All Tcl
+    commands and procedures become callable as methods on this object.
+
+    Method calls are automatically translated to Tcl command invocations, with
+    Python arguments converted to Tcl-friendly strings. Return values are
+    wrapped in TclRemoteObjRef objects.
 
     Example::
 
-        with MyTclTool() as t:
-            # t is a TclToolInterface object.
-            pass
+        with Tclsh() as t:
+            # t is a TclToolInterface object
+            result = t.expr(3, "*", 5)  # Calls Tcl command: expr {3} {*} {5}
+            print(result)  # 15
     """
     def __init__(self, tcl_tool:TclTool):
         self.tcl_tool = tcl_tool
 
     def __getattr__(self, name):
         """
-        For every unknown attribute, a method is returned that that calls the
-        Tcl command or procedure of corresponding name.
+        Return a callable that invokes the Tcl command with the given name.
 
-        Example use for a TclToolInterface t, in which the method returned by
-        __getattr__ is immediately called, returning a TclRemoteObjRef::
+        Any attribute access becomes a method call to the corresponding Tcl
+        command or procedure. Arguments are automatically converted using
+        tclobj.encode().
 
-            v = t.expr(3, "*", 5)
+        Args:
+            name: Name of the Tcl command to invoke.
+
+        Returns:
+            A callable that accepts ``*args`` and ``**kwargs``, converts them to Tcl
+            syntax, and returns a TclRemoteObjRef.
+
+        Example::
+
+            result = t.expr(3, "*", 5)  # Invokes: expr {3} {*} {5}
+            items = t.lreverse([1, 2, 3])  # Invokes: lreverse {1 2 3}
         """
         return lambda *args, **kwargs: self.tcl_tool.proc_call(name, args, kwargs)
 
     def __call__(self, cmd: str) -> TclRemoteObjRef:
         """
-        Calling TclToolInterface allows low-level evaluation of a strings without
-        using the higher-level method calls.
+        Evaluate a raw Tcl command string.
 
-        Example use for a TclToolInterface t::
+        Calling the TclToolInterface object directly allows evaluation of
+        arbitrary Tcl strings without argument conversion.
 
-            v = t("expr 3 * 5")
+        Args:
+            cmd: Tcl command string to evaluate.
+
+        Returns:
+            TclRemoteObjRef wrapping the return value.
+
+        Raises:
+            TclError: If the Tcl command fails.
+
+        Example::
+
+            result = t("expr 3 * 5")  # Direct string evaluation
+            result = t.expr(3, "*", 5)  # Equivalent method call
         """
         return self.tcl_tool.eval(cmd)

@@ -20,9 +20,25 @@ A *TclRemoteObjRef* can be converted to a string via *str()*.
 
 class TclRemoteObjRef:
     """
-    Tcl return values are encapsulated in instances of TclRemoteObjRef.
-    Using str(), the string representation of the TclRemoteObjRef can be
-    accessed. 
+    Wrapper for Tcl command return values that preserves opaque handles.
+
+    All Tcl command return values are wrapped in TclRemoteObjRef objects.
+    When passed back to Tcl, NoTcl uses a reference to the original Tcl object
+    rather than its string representation, preserving the internal representation
+    and memory address of opaque handles.
+
+    TclRemoteObjRef supports conversion to Python types via str(), int(), and
+    float(). For object-oriented Tcl APIs, methods can be called on the
+    TclRemoteObjRef (see __getattr__).
+
+    Example::
+
+        result = t.expr(3, "*", 5)
+        print(str(result))  # "15"
+        print(int(result))  # 15
+
+        handle = t.create_object()
+        t.modify_object(handle)  # Uses Tcl reference, not string
     """
 
     def __init__(self, tool, cmd_idx:int, value:str, cmd:str):
@@ -36,9 +52,16 @@ class TclRemoteObjRef:
 
     def ref_str(self):
         """
+        Get the Tcl reference string for this object.
+
         Returns:
-            A Tcl string referencing the corresponding Tcl object in the
-            $cmd_results Tcl array, e. g. '$cmd_results(123)'.
+            A Tcl variable reference string (e.g., "$cmd_results(123)") that
+            can be used in raw Tcl command strings to reference this object.
+
+        Example::
+
+            handle = t.create_object()
+            t(f"puts {handle.ref_str()}")  # Explicitly use Tcl reference
         """
         return f"$cmd_results({self.cmd_idx})"
 
@@ -53,24 +76,29 @@ class TclRemoteObjRef:
 
     def __getattr__(self, name):
         """
-        Similar to TclToolInterface.__getattr__. In addition to methods of
-        TclToolInterface, methods returned by this __getattr__ include the
-        TclRemoteObjRef as part of the Tcl string that is to be evaluated.
+        Enable object-oriented method calls on Tcl objects.
 
-        Exmaple::
-        
-            v = t.concat("MyObj")
-            v.mymethod("arg1", "arg2")
+        Similar to TclToolInterface.__getattr__, but includes this TclRemoteObjRef
+        in the generated Tcl command. The position is controlled by
+        TclTool.called_object_pos.
 
-        If TclTool.called_object_pos is 'first', the object name is used as Tcl
-        command name: 'MyObj mymethod arg1 arg2'
+        Args:
+            name: Method name to call.
 
-        If TclTool.called_object_pos is 'second', the method name is the command
-        name and the object name comes right after the method name:
-        'mymethod MyObj arg1 arg2'
+        Returns:
+            A callable that invokes the Tcl command with this object reference.
 
-        If TclTool.called_object_pos is 'last', the object name is appended
-        at the end of the argument list: 'mymethod arg1 arg2 MyObj'
+        Example::
+
+            obj = t.create_object()
+            obj.set_property("value")  # Method call on the object
+
+        The object position in the generated Tcl command depends on
+        TclTool.called_object_pos:
+
+        - 'first': object is command name (e.g., "$obj method arg1 arg2")
+        - 'second': object follows method (e.g., "method $obj arg1 arg2")
+        - 'last': object is last argument (e.g., "method arg1 arg2 $obj")
         """
 
         return lambda *args, **kwargs: self.proc_call(name, args, kwargs)

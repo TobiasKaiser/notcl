@@ -1,6 +1,46 @@
 Tests
 =====
 
-NoTcl comes with some tests. They can be run with :code:`pytest .`.
+NoTcl includes a comprehensive test suite covering core functionality, concurrency, and integration with Tcl tools.
 
-To run all tests, you need to compile the custom Tcl shell that is found in the folder *utils/test-notcl-tclsh/*. Tcl development headers are required for this (package *tcl-dev* in Debian / Ubuntu). Compile by running :code:`make`, then add the folder in which the executable *test-notcl-tclsh* resides to PATH when running Pytest. When *test-notcl-tclsh* is not found, the corresponding tests are skipped.
+Running the tests
+-----------------
+
+To run all tests from the project root::
+
+    pytest notcl/tests/
+
+Or with verbose output::
+
+    pytest notcl/tests/ -v
+
+Test requirements
+-----------------
+
+Most tests require a Tcl shell to be available. NoTcl includes a custom test shell in ``utils/test-notcl-tclsh/`` that provides additional test commands.
+
+To compile the test shell:
+
+1. Install Tcl development headers (package ``tcl-dev`` on Debian/Ubuntu)
+2. Navigate to ``utils/test-notcl-tclsh/``
+3. Run ``make``
+4. Add the directory to PATH when running pytest:
+
+   .. code-block:: bash
+
+       PATH=$PATH:/path/to/notcl/utils/test-notcl-tclsh pytest notcl/tests/
+
+When the test shell is not found, tests requiring it are automatically skipped.
+
+Test coverage
+-------------
+
+The test suite includes:
+
+- **Basic functionality** (``test_tclsh.py``): Command evaluation, type conversion, error handling, return value references
+- **Concurrency** (``test_concurrency.py``): Nested contexts, parallel tool instances, subprocess compatibility
+- **Bridge communication** (``test_bridge.py``): Low-level message passing between Python and Tcl
+- **Custom tools** (``test_custom_tclsh.py``): TclRemoteObjRef features, object-oriented API usage
+- **Type encoding** (``test_tclobj.py``): Python to Tcl data structure conversion
+
+All tests use the standard Tcl shell (``tclsh``) as the simplest possible Tcl-based tool, ensuring the library works correctly with minimal dependencies.
