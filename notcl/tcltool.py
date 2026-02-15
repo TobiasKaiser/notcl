@@ -161,10 +161,7 @@ class TclTool(ABC):
             # child connects, which recv_raw handles via FIONREAD.
             self.bs.open_sentinel()
 
-            if self.interact:
-                quit = '0'
-            else:
-                quit = '1'
+            quit = not self.interact
 
             try:
                 self.hello = self.bs.recv(msg.TclHello)
@@ -178,7 +175,7 @@ class TclTool(ABC):
                 except:
                     self.debug_log("Caught exception in TclTool context.")
                     if self.abort_on_error:
-                        quit = '1'
+                        quit = True
                     else:
                         s = traceback.format_exc()
                         self.log("error",
@@ -192,9 +189,12 @@ class TclTool(ABC):
                 if not child_exited_early:
                     self.debug_log("Sending PyExit")
 
-                    if quit == '0':
+                    if not quit:
                         self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
-                    self.bs.send(msg.PyExit(quit=quit))
+                    try:
+                        self.bs.send(msg.PyExit(quit='1' if quit else '0'))
+                    except ChildProcessEarlyExit:
+                        child_exited_early = True
 
                 self.debug_log("TclTool context finished, waiting for child process to terminate.")
                 rc = self.proc.wait()

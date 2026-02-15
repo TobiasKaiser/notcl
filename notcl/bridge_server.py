@@ -42,8 +42,8 @@ class BridgeServer:
             self.log = custom_log_func
 
     def open_sentinel(self):
-        """Open the read end of the sentinel pipe. Call this after the child
-        process has opened the write end (i.e. after receiving TclHello)."""
+        """Open the read end of the sentinel pipe. Must be called before
+        recv(TclHello) so the Tcl side's blocking WRONLY open can proceed."""
         self.sentinel_fd = os.open(self.fn_sentinel, os.O_RDONLY | os.O_NONBLOCK)
 
     @staticmethod
@@ -99,7 +99,11 @@ class BridgeServer:
                             m_recv = RawMessage.from_pipe(f_in)
                         tcl2py_fd = -1  # fdopen took ownership
                         break
-                    # else: no writer yet (premature EOF), continue waiting
+                    else:
+                        # No writer yet (premature EOF). Sleep briefly via
+                        # select on sentinel to avoid busy-looping while
+                        # still detecting child death promptly.
+                        select.select([self.sentinel_fd], [], [], 0.01)
         finally:
             if tcl2py_fd >= 0:
                 os.close(tcl2py_fd)
