@@ -12,7 +12,7 @@ maintainers = [
   {name = "Tobias Kaiser", email = "mail@tb-kaiser.de"}
 ]
 description = "Replace Tcl scripting with Python"
-readme = "README.rst"
+readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
