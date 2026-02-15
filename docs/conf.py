@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.abspath("../"))
 # -- Project information -----------------------------------------------------
 
 project = 'NoTcl'
-copyright = '2022 - 2025, Tobias Kaiser'
+copyright = 'Tobias Kaiser'
 author = 'Tobias Kaiser'
 
 # The full version, including alpha/beta/rc tags
