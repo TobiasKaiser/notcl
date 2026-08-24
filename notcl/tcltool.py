@@ -102,8 +102,10 @@ class TclTool(ABC):
             interact: If True, keep the Tcl tool open for interactive use after
                 the with block exits. The Python script waits for manual
                 termination. Default: False.
-            log_commands: Print all Tcl commands sent to the tool to stdout.
-                Default: True.
+            log_commands: Print all Tcl commands sent to the tool. The
+                command line is written by the Tcl side to the tool's stdout,
+                so it also appears in log files that the tool creates from
+                its output. Default: True.
             log_retvals: Print all return values received from Tcl to stdout.
                 Default: False.
             log_fancy: Use ANSI color codes in log output. Default: True.
@@ -183,6 +185,7 @@ class TclTool(ABC):
         env["NOTCL_PIPE_PY2TCL"]=self.bs.fn_py2tcl
         env["NOTCL_PIPE_SENTINEL"]=self.bs.fn_sentinel
         env["NOTCL_DEBUG_TCL"]=("1" if self.debug_tcl else "0")
+        env["NOTCL_LOG_COMMANDS"]=("1" if self.log_commands else "0")
         return env
 
     def debug_log(self, message:str):
@@ -190,7 +193,7 @@ class TclTool(ABC):
         Prints debug message, if debug output is enabled by debug_py flag.
         """
         if self.debug_py:
-            print(f"[notcl] Python: {message}")
+            print(f"[notcl] Python: {message}", flush=True)
 
 
     @contextmanager
@@ -314,16 +317,18 @@ class TclTool(ABC):
 
     def log(self, log_type:Literal["command", "info", "retval", "error"], data:str):
         """
-        log prints log messages for every Tcl command invokation and every
-        received return value or error. It is enabled/disabled by the logs
-        argument passed to __init__.
+        log prints log messages for every received return value or error.
+        It is enabled/disabled by the log_* arguments passed to __init__.
+
+        Tcl command invocations are not printed here: the "[notcl] Cmd:" line
+        is emitted by the Tcl side (NoTcl::comm_loop in notcl.tcl), so that
+        it is part of the tool's stdout and thereby of any log file the tool
+        creates from its output.
         """
         assert log_type in ("command", "retval", "error", "info")
         if log_type == "command":
             self.debug_log(f"Running command: {data}")
-            if not self.log_commands:
-                return
-            log_symbol = "Cmd:"
+            return
         elif log_type == "retval":
             self.debug_log(f"Return value: {data}")
             if not self.log_retvals:
@@ -347,7 +352,10 @@ class TclTool(ABC):
             elif log_type=="info":
                 style_symbol = ANSITerm.BgGreen
 
-        print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}")
+        # Flush explicitly: the Cmd: lines come from the Tcl process, so the
+        # Python-side lines must not linger in a block buffer (e.g. when
+        # stdout is redirected to a file) or they would appear out of order.
+        print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}", flush=True)
 
     def eval(self, cmd: str) -> TclRemoteObjRef:
         """

@@ -10,13 +10,21 @@ namespace eval NoTcl {
     set fn_py2tcl $env(NOTCL_PIPE_PY2TCL)
     set fn_sentinel $env(NOTCL_PIPE_SENTINEL)
 
+    # Output of log is written to screen and tool log file.
+    proc log {message} {
+        puts "\[notcl\] $message"
+        flush stdout
+    }
+
     if $env(NOTCL_DEBUG_TCL) {
-        proc log {message} {
-            puts "\[notcl\] Tcl: $message"
+        proc debug_log {message} {
+            log "Tcl: $message"
         }
     } else {
-        proc log {message} {}
+        proc debug_log {message} {}
     }
+
+    variable log_commands $env(NOTCL_LOG_COMMANDS)
 
     variable base64_impl
     variable fn_py2tcl
@@ -25,10 +33,10 @@ namespace eval NoTcl {
 
     if {[catch {package require base64}]} {
         # Error thrown - package not found.
-        log "Using built-in base64 implementation."
+        debug_log "Using built-in base64 implementation."
         set base64_impl builtin
     } else {
-        log "Using base64 package."
+        debug_log "Using base64 package."
         set base64_impl package
     }
 
@@ -82,7 +90,7 @@ namespace eval NoTcl {
     proc sendmsg {msg} {
         variable fn_tcl2py
         
-        log "sendmsg: opening tcl2py pipe $fn_tcl2py to send message..."
+        debug_log "sendmsg: opening tcl2py pipe $fn_tcl2py to send message..."
         set pipe [open $fn_tcl2py {WRONLY}]
         set first 1
         dict for {key value} $msg {
@@ -95,13 +103,13 @@ namespace eval NoTcl {
         }
         flush $pipe
         close $pipe
-        log "sendmsg: message sent, tcl2py pipe $fn_tcl2py closed."
+        debug_log "sendmsg: message sent, tcl2py pipe $fn_tcl2py closed."
     }
 
     proc recvmsg {} {
         variable fn_py2tcl
         
-        log "recvmsg: opening py2tcl pipe $fn_py2tcl to receive message..."
+        debug_log "recvmsg: opening py2tcl pipe $fn_py2tcl to receive message..."
         set pipe [open $fn_py2tcl r]
         set msg {}
         while { ! [eof $pipe]} {
@@ -110,7 +118,7 @@ namespace eval NoTcl {
             dict append msg $key $value
         }
         close $pipe
-        log "recvmsg: message received, py2tcl pipe $fn_py2tcl closed."
+        debug_log "recvmsg: message received, py2tcl pipe $fn_py2tcl closed."
         return $msg
     }
 
@@ -149,6 +157,7 @@ namespace eval NoTcl {
     proc comm_loop {} {
         variable cmd_idx
         variable cmd_results
+        variable log_commands
 
         set repr_supported [command_present "::tcl::unsupported::representation"]
 
@@ -160,7 +169,10 @@ namespace eval NoTcl {
                 PyProcedureCall {
                     set cmd [dict get $r_msg command]
 
-                    log "Executing command: $cmd"
+                    if { $log_commands } {
+                        log "Cmd: $cmd"
+                    }
+                    debug_log "Executing command: $cmd"
 
                     set err_code [catch $cmd cmd_results($cmd_idx)]
 
@@ -168,9 +180,9 @@ namespace eval NoTcl {
                     # Unfortunately, this is not always supported.
                     #log "Command finished, return [::tcl::unsupported::representation $cmd_results($cmd_idx)]" 
                     if { $repr_supported } {
-                        log "Command finished, returned [::tcl::unsupported::representation $cmd_results($cmd_idx)]."
+                        debug_log "Command finished, returned [::tcl::unsupported::representation $cmd_results($cmd_idx)]."
                     } else {
-                        log [format "Command finished, returned \"%s\"." $cmd_results($cmd_idx)]
+                        debug_log [format "Command finished, returned \"%s\"." $cmd_results($cmd_idx)]
                     }
 
                     send_proc_result $err_code $cmd_idx $cmd_results($cmd_idx)

@@ -49,27 +49,19 @@ def test_dict():
         v=t.dict("merge", {"key1":"value1"}, {"key2":"value2", "key3":"value3"})
         assert str(v).split(" ") == ["key1", "value1", "key2", "value2", "key3", "value3"]
 
-def test_expr_log_commands_fancy(capsys):
-    with Tclsh(log_commands=True, log_fancy=True) as t:
+def test_expr_log_commands(capfd):
+    with Tclsh(log_commands=True) as t:
         v=t.expr(9, '+', 3, '*', 11)
         assert int(v) == 9+3*11
-    cap = capsys.readouterr()
-    assert cap.out == "\x1b[93m[notcl]\x1b[0m Cmd:\x1b[0m expr {9} {+} {3} {*} {11}\n"
-    assert cap.err == ""
-
-def test_expr_log_commands_plain(capsys):
-    with Tclsh(log_commands=True, log_fancy=False) as t:
-        v=t.expr(9, '+', 3, '*', 11)
-        assert int(v) == 9+3*11
-    cap = capsys.readouterr()
+    cap = capfd.readouterr()
     assert cap.out == "[notcl] Cmd: expr {9} {+} {3} {*} {11}\n"
     assert cap.err == ""
 
-def test_expr_log_commands_disabled(capsys):
+def test_expr_log_commands_disabled(capfd):
     with Tclsh(log_commands=False) as t:
         v=t.expr(9, '+', 3, '*', 11)
         assert int(v) == 9+3*11
-    cap = capsys.readouterr()
+    cap = capfd.readouterr()
     assert cap.out == ""
     assert cap.err == ""
 
@@ -145,4 +137,4 @@ def test_child_terminates_zero():
 def test_context_forwards_excepts():
     with pytest.raises(ValueError):
         with Tclsh() as t:
-            raise ValueError("test")  
+            raise ValueError("test")
