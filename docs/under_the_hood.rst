@@ -60,10 +60,15 @@ NoTcl detects unexpected child termination (crashes, explicit ``exit`` calls) us
 
 This approach has several advantages over signal-based detection:
 
-- No process-global signal handlers (allows concurrent TclTool instances)
+- No SIGCHLD handler (allows concurrent TclTool instances)
 - No interference with user code that spawns subprocesses
 - Thread-safe (works from any thread)
 - Instant detection without polling
+
+Ctrl+C handling
+---------------
+
+A Ctrl+C in the terminal delivers SIGINT to the whole foreground process group, i.e. to Python and the Tcl tool at the same time. The Tcl tool handles the signal as it would interactively, typically by aborting its current command. Python must not react in the middle of a bridge transaction, as this would leave the Tcl tool without a communication partner. Therefore, while a command is in flight (as well as during the startup handshake and the shutdown of the tool), NoTcl temporarily installs a SIGINT handler that only records the signal; the recorded signal is acted upon once the tool has responded (see :doc:`usage`). While waiting for an interactive tool to exit, the recorded signal is discarded, as Ctrl+C at the tool's prompt is between the user and the tool. The handler is installed in the main thread only, as Python delivers signals to the main thread anyway. If an exception nevertheless escapes in the middle of a transaction (e.g. ``KeyboardInterrupt`` with ``handle_sigint=False``), the Tcl tool is terminated instead of being sent ``PyExit``.
 
 Return value preservation
 -------------------------

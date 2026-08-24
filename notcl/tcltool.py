@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
+import signal
+import threading
 import traceback
 import subprocess
 import importlib.resources
@@ -92,7 +95,8 @@ class TclTool(ABC):
 
     def __init__(self, cwd:Optional[Union[Path, str]]=None, interact:bool=False,
             log_commands:bool=True, log_retvals:bool=False, log_fancy:bool=True,
-            debug_tcl:bool=False, debug_py:bool=False, abort_on_error:bool=True):
+            debug_tcl:bool=False, debug_py:bool=False, abort_on_error:bool=True,
+            handle_sigint:bool=True):
         """
         Initialize the TclTool.
 
@@ -113,6 +117,14 @@ class TclTool(ABC):
             debug_py: Enable detailed debug output from the Python side. Default: False.
             abort_on_error: Terminate the child process when a Tcl error occurs,
                 even if interact=True. Default: True.
+            handle_sigint: Let the Tcl tool handle Ctrl+C (SIGINT). While a
+                Tcl command is running, Python only records SIGINT instead of
+                raising KeyboardInterrupt; the Tcl tool, which receives the
+                same signal from the terminal, aborts its current command as
+                it would interactively. Once the tool responds, a Tcl error
+                is raised as TclError, otherwise KeyboardInterrupt is raised.
+                If False, Ctrl+C raises KeyboardInterrupt immediately and the
+                Tcl tool is terminated. Default: True.
         """
 
         self.interact = interact
@@ -122,6 +134,7 @@ class TclTool(ABC):
         self.debug_tcl=debug_tcl
         self.debug_py=debug_py
         self.abort_on_error = abort_on_error
+        self.handle_sigint = handle_sigint
         self._script_name = None
         self.cm = None
         
@@ -196,6 +209,68 @@ class TclTool(ABC):
             print(f"[notcl] Python: {message}", flush=True)
 
 
+    class _SigintRecord:
+        """Counts SIGINTs received while they are deferred (see _defer_sigint)."""
+        def __init__(self):
+            self.count = 0
+
+    @contextmanager
+    def _defer_sigint(self, hint:bool):
+        """
+        Context in which SIGINT is recorded instead of raising KeyboardInterrupt.
+
+        On Ctrl+C, the terminal sends SIGINT to the whole foreground process
+        group, i.e. to Python and to the Tcl tool alike. The tool handles the
+        signal its own way (typically aborting its current command); Python
+        must not react in the middle of a bridge transaction, as this would
+        leave the tool without a communication partner. The yielded record
+        tells the caller afterwards whether SIGINT was received.
+
+        Signal handlers can only be installed in the main thread; in other
+        threads (where Python never delivers SIGINT anyway) and with
+        handle_sigint=False, this is a no-op.
+
+        Args:
+            hint: Print a hint on the first SIGINT telling the user how to
+                proceed if the Tcl tool does not respond.
+        """
+        record = self._SigintRecord()
+        if not self.handle_sigint or threading.current_thread() is not threading.main_thread():
+            yield record
+            return
+
+        def handler(signum, frame):
+            # No print() here: the signal may have interrupted a print() in
+            # progress, whose stream lock is then held (see _write_unbuffered).
+            record.count += 1
+            if self.debug_py:
+                self._write_unbuffered(f"[notcl] Python: SIGINT received (#{record.count}), deferred.")
+            if hint and record.count == 1:
+                self._write_unbuffered(self._format_log("info", "Info:",
+                    "SIGINT received, waiting for the Tcl tool "
+                    "to abort the current command. If the tool does not "
+                    f"respond, terminate it (pid {self.proc.pid}) or type "
+                    "\"exit\" at its prompt to abort."))
+
+        prev_handler = signal.signal(signal.SIGINT, handler)
+        try:
+            yield record
+        finally:
+            signal.signal(signal.SIGINT, prev_handler)
+
+    def _terminate_child(self):
+        """
+        Terminates the Tcl child process. Used when the bridge is not at a
+        message boundary, so that PyExit cannot be sent.
+        """
+        self.debug_log("Terminating child process.")
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.debug_log("Child process did not terminate, killing it.")
+            self.proc.kill()
+
     @contextmanager
     def contextmanager(self):
         """
@@ -206,6 +281,7 @@ class TclTool(ABC):
         """
 
         child_exited_early = False
+        child_terminated = False
 
         with BridgeServer(custom_log_func=self.debug_log) as self.bs,\
             importlib.resources.as_file(importlib.resources.files(tcl).joinpath("notcl.tcl")) as script_name:
@@ -231,17 +307,27 @@ class TclTool(ABC):
             self.bs.open_sentinel()
 
             quit = not self.interact
+            exc_pending = False
 
             try:
-                self.hello = self.bs.recv(msg.TclHello)
+                with self._defer_sigint(hint=False) as sigint:
+                    self.hello = self.bs.recv(msg.TclHello)
                 self.debug_log(f"Received TclHello: {self.hello}")
+                if sigint.count:
+                    # Ctrl+C during tool startup; the tool survived it.
+                    self.debug_log("SIGINT during startup, raising KeyboardInterrupt.")
+                    quit = True
+                    raise KeyboardInterrupt
 
                 try:
                     yield TclToolInterface(self)
                 except ChildProcessEarlyExit:
                     child_exited_early = True
                     raise
-                except Exception:
+                except (Exception, KeyboardInterrupt):
+                    # KeyboardInterrupt is not an Exception, but eval()
+                    # raises it after a deferred SIGINT (see handle_sigint);
+                    # it must abort an interactive session just the same.
                     self.debug_log("Caught exception in TclTool context.")
                     if self.abort_on_error:
                         quit = True
@@ -253,28 +339,57 @@ class TclTool(ABC):
                     raise
             except ChildProcessEarlyExit:
                 child_exited_early = True
+                exc_pending = True
+                raise
+            except BaseException:
+                exc_pending = True
                 raise
             finally:
-                if not child_exited_early:
-                    self.debug_log("Sending PyExit")
+                # Ctrl+C during teardown must not interrupt the PyExit
+                # transaction or leave the child unwaited for. It is deferred
+                # and raised as KeyboardInterrupt afterwards, unless an
+                # exception is propagating already.
+                with self._defer_sigint(hint=False) as sigint:
+                    if child_exited_early:
+                        pass
+                    elif self.bs.state != BridgeServer.State.WaitForSend:
+                        # An exception escaped in the middle of a bridge
+                        # transaction (e.g. KeyboardInterrupt with
+                        # handle_sigint=False while waiting for a result).
+                        # The Tcl side is not in a state to receive PyExit.
+                        self.debug_log("Bridge not at message boundary, cannot send PyExit.")
+                        self._terminate_child()
+                        child_terminated = True
+                    else:
+                        self.debug_log("Sending PyExit")
 
-                    if not quit:
-                        self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
-                    try:
-                        self.bs.send(msg.PyExit(quit='1' if quit else '0'))
-                    except ChildProcessEarlyExit:
-                        child_exited_early = True
+                        if not quit:
+                            self.log("info", "Python control finished. Please exit Tcl tool to continue Python script.")
+                        try:
+                            self.bs.send(msg.PyExit(quit='1' if quit else '0'))
+                        except ChildProcessEarlyExit:
+                            child_exited_early = True
 
-                self.debug_log("TclTool context finished, waiting for child process to terminate.")
-                rc = self.proc.wait()
+                    self.debug_log("TclTool context finished, waiting for child process to terminate.")
+                    if not (quit or child_exited_early or child_terminated):
+                        # Interactive use: Ctrl+C at the tool's prompt is
+                        # between the user and the tool; discard it.
+                        sigint.count = 0
+                    rc = self.proc.wait()
 
                 if child_exited_early:
                     self.debug_log(f"Child exited early with return code {rc}.")
+                elif child_terminated:
+                    self.debug_log(f"Terminated child exited with return code {rc}.")
                 elif rc == 0:
                     self.debug_log(f"Child process terminated with return code {rc}.")
                 else:
                     self.debug_log(f"Child process terminated with abnormal return code {rc}.")
                     raise subprocess.CalledProcessError(rc, cmdline)
+
+                if sigint.count and not exc_pending:
+                    self.debug_log("SIGINT during teardown, raising KeyboardInterrupt.")
+                    raise KeyboardInterrupt
 
     def __enter__(self):
         assert self.cm == None
@@ -340,6 +455,12 @@ class TclTool(ABC):
         elif log_type == "info":
             log_symbol = "Info:"
 
+        # Flush explicitly: the Cmd: lines come from the Tcl process, so the
+        # Python-side lines must not linger in a block buffer (e.g. when
+        # stdout is redirected to a file) or they would appear out of order.
+        print(self._format_log(log_type, log_symbol, data), flush=True)
+
+    def _format_log(self, log_type:str, log_symbol:str, data:str) -> str:
         style_notcl = ""
         style_reset = ""
         style_symbol = ""
@@ -352,10 +473,23 @@ class TclTool(ABC):
             elif log_type=="info":
                 style_symbol = ANSITerm.BgGreen
 
-        # Flush explicitly: the Cmd: lines come from the Tcl process, so the
-        # Python-side lines must not linger in a block buffer (e.g. when
-        # stdout is redirected to a file) or they would appear out of order.
-        print(f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}", flush=True)
+        return f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}"
+
+    @staticmethod
+    def _write_unbuffered(line:str):
+        """
+        Writes a line to stdout bypassing Python's buffered stream. For use
+        in signal handlers: print() would raise "reentrant call" if the
+        signal interrupted a print() in progress.
+        """
+        try:
+            fd = sys.stdout.fileno()
+        except (AttributeError, OSError, ValueError):
+            # stdout replaced by something without a file descriptor
+            # (e.g. pytest's capsys); reentrancy is not a concern there.
+            print(line, flush=True)
+            return
+        os.write(fd, (line + "\n").encode(errors="replace"))
 
     def eval(self, cmd: str) -> TclRemoteObjRef:
         """
@@ -372,16 +506,25 @@ class TclTool(ABC):
 
         Raises:
             TclError: If the Tcl command fails.
+            KeyboardInterrupt: If SIGINT was received during the command and
+                the Tcl tool did not respond with an error (see handle_sigint).
         """
         self.log("command", cmd)
-        self.bs.send(msg.PyProcedureCall(command=cmd))
-        r_msg = self.bs.recv(msg.TclProcedureResult)
+        with self._defer_sigint(hint=True) as sigint:
+            self.bs.send(msg.PyProcedureCall(command=cmd))
+            r_msg = self.bs.recv(msg.TclProcedureResult)
         cmd_idx = int(r_msg.cmd_idx)
         err_code = int(r_msg.err_code)
 
         if err_code:
             self.log("error", f"{r_msg.result}")
             raise TclError(r_msg.result)
+        elif sigint.count:
+            # The Tcl tool did not turn the SIGINT into an error (it ignored
+            # it, or the signal arrived outside the command's execution).
+            # Do not let the Ctrl+C go unnoticed.
+            self.debug_log("Command completed without error after SIGINT, raising KeyboardInterrupt.")
+            raise KeyboardInterrupt
         else:
             self.log("retval", r_msg.result)
             return TclRemoteObjRef(self, cmd_idx, r_msg.result, cmd)

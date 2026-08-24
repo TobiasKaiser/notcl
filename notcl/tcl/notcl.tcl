@@ -10,7 +10,7 @@ namespace eval NoTcl {
     set fn_py2tcl $env(NOTCL_PIPE_PY2TCL)
     set fn_sentinel $env(NOTCL_PIPE_SENTINEL)
 
-    # Output of log is written to screen and tool log file.
+    # Output og log is written to screen and tool log file.
     proc log {message} {
         puts "\[notcl\] $message"
         flush stdout
@@ -87,11 +87,28 @@ namespace eval NoTcl {
         }
     }
 
+    proc open_pipe {fn access} {
+        # Opening a FIFO blocks until the other side connects. This is where
+        # the Tcl tool waits while Python is busy.
+        # Ctrl+C sends SIGINT to both Python and Tcl processes. Ignore/retry
+        # SIGINT while waiting for Python.
+        while { 1 } {
+            if { [catch {open $fn $access} result options] } {
+                if { [lindex $::errorCode 1] eq "EINTR" } {
+                    debug_log "open $fn interrupted by signal, retrying."
+                    continue
+                }
+                return -options $options $result
+            }
+            return $result
+        }
+    }
+
     proc sendmsg {msg} {
         variable fn_tcl2py
         
         debug_log "sendmsg: opening tcl2py pipe $fn_tcl2py to send message..."
-        set pipe [open $fn_tcl2py {WRONLY}]
+        set pipe [open_pipe $fn_tcl2py {WRONLY}]
         set first 1
         dict for {key value} $msg {
             if { ! $first } {
@@ -110,7 +127,7 @@ namespace eval NoTcl {
         variable fn_py2tcl
         
         debug_log "recvmsg: opening py2tcl pipe $fn_py2tcl to receive message..."
-        set pipe [open $fn_py2tcl r]
+        set pipe [open_pipe $fn_py2tcl r]
         set msg {}
         while { ! [eof $pipe]} {
             set key [gets $pipe]
@@ -147,7 +164,7 @@ namespace eval NoTcl {
     # ("_selX") anymore. Obviously, this does not work with Python variables.
     variable cmd_idx
     variable cmd_results ;# This is an array
-    
+
     set cmd_idx 0
 
     proc command_present {cmd} {
@@ -202,16 +219,17 @@ namespace eval NoTcl {
     }
 
     proc main {} {
-        global env
         variable fn_sentinel
         # Open sentinel pipe - kept open for lifetime of process.
         # Python side detects child termination when this pipe reaches EOF.
+        # (Tcl channels are not closed when this proc returns or is unwound.)
         set sentinel [open $fn_sentinel {WRONLY}]
         NoTcl::send_hello
         if { [ NoTcl::comm_loop ] } {
             exit
         }
     }
+
 }
 
 NoTcl::main

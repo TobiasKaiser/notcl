@@ -46,6 +46,19 @@ When the ``with`` block is entered, a separate subprocess is spawned running the
 
 :class:`~notcl.TclTool` accepts several constructor parameters for controlling logging, working directory, and interactive mode. See the :doc:`api_reference` for details.
 
+Interrupting Tcl commands with Ctrl+C
+-------------------------------------
+
+Pressing Ctrl+C in the terminal sends SIGINT to the Python process and to the Tcl tool alike. While a Tcl command is running, NoTcl leaves the signal to the Tcl tool, which aborts its current command the same way it does interactively, and defers Python's reaction until the tool has responded:
+
+- If the tool reports an error for the aborted command, it is raised as :class:`~notcl.TclError`. The tool remains usable; the Python script can catch the exception and continue.
+- If the tool completes the command normally regardless (e.g. it ignored the signal), :class:`KeyboardInterrupt` is raised so that the Ctrl+C does not go unnoticed.
+- If the tool exits, :class:`~notcl.ChildProcessEarlyExit` is raised.
+
+If the tool does not respond to the Ctrl+C at all, terminate the tool process (its pid is shown in the hint printed by NoTcl) or type ``exit`` at its prompt - Python then raises :class:`~notcl.ChildProcessEarlyExit`.
+
+Pass ``handle_sigint=False`` to :class:`~notcl.TclTool` to get plain Python behavior instead: Ctrl+C raises :class:`KeyboardInterrupt` immediately and the Tcl tool is terminated.
+
 Calling Tcl Commands
 --------------------
 
