@@ -3,6 +3,7 @@
 
 import os
 import sys
+import signal
 import pytest
 import subprocess
 from pathlib import Path
@@ -192,6 +193,44 @@ def test_child_terminates_zero():
 
     assert reaches1
     assert not reaches2
+
+def test_child_killed_while_idle():
+    # The tool dies between two commands, i.e. while the bridge is at a
+    # message boundary. Leaving the context must not succeed silently.
+    with pytest.raises(ChildProcessEarlyExit):
+        with Tclsh() as t:
+            tool = t.tcl_tool
+            t.set("x", 1)
+            os.kill(tool.proc.pid, signal.SIGKILL)
+            tool.proc.wait()
+    assert tool.proc.returncode == -signal.SIGKILL
+
+def test_nested_inner_tool_exits():
+    # The early exit of the inner tool propagates through the outer context,
+    # which must still quit its own (live) tool regularly instead of
+    # mistaking the exception for its own tool's death and waiting forever.
+    # Runs in a child process with a timeout, as a regression would hang.
+    from .test_sigint import run_scenario
+    output, rc = run_scenario(dedent("""\
+        class Tclsh(TclTool):
+            def cmdline(self):
+                return ["tclsh", self.script_name()]
+        try:
+            with Tclsh(log_fancy=False) as a:
+                outer = a.tcl_tool
+                with Tclsh(log_fancy=False) as b:
+                    b.exit(0)
+                    report("NOT_REACHED")
+        except ChildProcessEarlyExit:
+            report("EARLY_EXIT")
+        report("OUTER_RC", outer.proc.returncode)
+        report("DONE")
+        """), lambda p, line: None, timeout=10)
+    assert "SCENARIO: NOT_REACHED\n" not in output
+    assert "SCENARIO: EARLY_EXIT\n" in output
+    assert "SCENARIO: OUTER_RC 0\n" in output # outer tool quit regularly
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
 
 def test_child_fails_to_start():
     # The tool dies before it ever runs notcl.tcl (e.g. invalid command line

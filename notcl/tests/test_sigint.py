@@ -181,6 +181,42 @@ def test_tool_dies():
     assert rc == 0
     assert_clean(output)
 
+def test_nested_contexts_idle_tool_dies():
+    # Ctrl+C during the outer tool's command also reaches the idle inner
+    # tool (plain tclsh here), which dies. Leaving the inner context must
+    # report this instead of succeeding silently; the outer tool, which
+    # survived, must be quit regularly afterwards.
+    CustomTclsh.require()
+    output, rc = run_scenario(dedent("""\
+        class Tclsh(TclTool):
+            def cmdline(self):
+                return ["tclsh", self.script_name()]
+        with CustomTclsh(log_fancy=False) as a:
+            a.ignore_sigint()
+            try:
+                with Tclsh(log_fancy=False) as b:
+                    inner = b.tcl_tool
+                    b.set("x", 1)
+                    report("READY")
+                    try:
+                        a.exec("sleep", "5")
+                        report("NO_ERROR")
+                    except TclError as e:
+                        report("OUTER_TCLERROR", e)
+                report("INNER_EXITED_NORMALLY")
+            except ChildProcessEarlyExit:
+                report("INNER_EARLY_EXIT", inner.proc.returncode)
+            report("A_EXPR", a.expr(1, "+", 1)) # outer tool still usable
+        report("DONE")
+        """), sigint_on_ready)
+    assert "SCENARIO: OUTER_TCLERROR child killed: interrupt\n" in output
+    assert "SCENARIO: INNER_EXITED_NORMALLY\n" not in output
+    assert f"SCENARIO: INNER_EARLY_EXIT {-signal.SIGINT}\n" in output
+    assert "SCENARIO: A_EXPR 2\n" in output
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
+    assert_clean(output)
+
 def test_sigint_during_startup():
     # Ctrl+C while the tool is still starting up (before TclHello) must not
     # break off the handshake: the tool is left alone, and once it is up,

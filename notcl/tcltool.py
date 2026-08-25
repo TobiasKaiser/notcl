@@ -291,7 +291,6 @@ class TclTool(ABC):
         not normally used externally.
         """
 
-        child_exited_early = False
         child_terminated = False
 
         with BridgeServer(custom_log_func=self.debug_log) as self.bs,\
@@ -335,15 +334,17 @@ class TclTool(ABC):
 
                 try:
                     yield TclToolInterface(self)
-                except ChildProcessEarlyExit:
-                    child_exited_early = True
-                    raise
                 except (Exception, KeyboardInterrupt):
                     # KeyboardInterrupt is not an Exception, but eval()
                     # raises it after a deferred SIGINT (see handle_sigint);
                     # it must abort an interactive session just the same.
                     self.debug_log("Caught exception in TclTool context.")
-                    if self.abort_on_error:
+                    if self.bs.child_exited():
+                        # Nothing to abort or to hold back: the tool is gone.
+                        # (The exception may or may not be about this tool,
+                        # e.g. a ChildProcessEarlyExit of a nested context.)
+                        pass
+                    elif self.abort_on_error:
                         quit = True
                     else:
                         s = traceback.format_exc()
@@ -351,10 +352,6 @@ class TclTool(ABC):
                             "Following exception is held back and will be raised "
                             f"once the Tcl child process exists:\n{s}")
                     raise
-            except ChildProcessEarlyExit:
-                child_exited_early = True
-                exc_pending = True
-                raise
             except BaseException:
                 exc_pending = True
                 raise
@@ -364,8 +361,14 @@ class TclTool(ABC):
                 # and raised as KeyboardInterrupt afterwards, unless an
                 # exception is propagating already.
                 with self._defer_sigint(hint=False) as sigint:
+                    # Whether *this* tool's child has exited is determined
+                    # here rather than from the type of a propagating
+                    # exception: a ChildProcessEarlyExit may stem from a
+                    # nested TclTool context and must not make this context
+                    # skip PyExit and then wait forever for a live tool.
+                    child_exited_early = self.bs.child_exited()
                     if child_exited_early:
-                        pass
+                        self.debug_log("Child process has exited already, not sending PyExit.")
                     elif self.bs.state != BridgeServer.State.WaitForSend:
                         # An exception escaped in the middle of a bridge
                         # transaction (e.g. KeyboardInterrupt with
@@ -393,6 +396,13 @@ class TclTool(ABC):
 
                 if child_exited_early:
                     self.debug_log(f"Child exited early with return code {rc}.")
+                    if not exc_pending:
+                        # The child died while idle, i.e. between commands
+                        # (e.g. killed by a Ctrl+C meant for another tool of
+                        # a nested context), and nobody noticed until now.
+                        # Do not let the context exit as if the tool had
+                        # finished regularly.
+                        raise ChildProcessEarlyExit()
                 elif child_terminated:
                     self.debug_log(f"Terminated child exited with return code {rc}.")
                 elif rc == 0:

@@ -87,6 +87,16 @@ class BridgeServer:
             fds.append(self.pidfd)
         return fds
 
+    def child_exited(self) -> bool:
+        """
+        True if the child process has exited, i.e. one of the exit fds is
+        readable. Before the child connects to the sentinel, the sentinel
+        fd is not reported readable (no writer has been connected yet), so
+        this can be called any time after open_sentinel().
+        """
+        rdready, _, _ = select.select(self._exit_fds(), [], [], 0)
+        return bool(rdready)
+
     @staticmethod
     def _bytes_available(fd):
         """Return the number of bytes available to read on fd (FIONREAD)."""
