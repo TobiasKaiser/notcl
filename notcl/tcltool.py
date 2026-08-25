@@ -226,6 +226,9 @@ class TclTool(ABC):
         leave the tool without a communication partner. The yielded record
         tells the caller afterwards whether SIGINT was received.
 
+        If the Tcl tool has exited already when SIGINT arrives, there is no
+        one to defer to, and KeyboardInterrupt is raised immediately.
+
         Signal handlers can only be installed in the main thread; in other
         threads (where Python never delivers SIGINT anyway) and with
         handle_sigint=False, this is a no-op.
@@ -242,6 +245,14 @@ class TclTool(ABC):
         def handler(signum, frame):
             # No print() here: the signal may have interrupted a print() in
             # progress, whose stream lock is then held (see _write_unbuffered).
+            if self.proc.poll() is not None:
+                # The Tcl tool is gone already, so there is no one to leave
+                # the signal to; the deferral would only leave the user
+                # stuck. Behave like plain Python instead.
+                if self.debug_py:
+                    self._write_unbuffered("[notcl] Python: SIGINT received, "
+                        "but the Tcl tool has exited; raising KeyboardInterrupt.")
+                raise KeyboardInterrupt
             record.count += 1
             if self.debug_py:
                 self._write_unbuffered(f"[notcl] Python: SIGINT received (#{record.count}), deferred.")

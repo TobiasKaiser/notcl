@@ -30,6 +30,7 @@ from textwrap import dedent
 
 import pytest
 
+from .. import TclTool
 from .test_custom_tclsh import CustomTclsh
 
 NOTCL_ROOT = Path(__file__).resolve().parents[2]
@@ -230,3 +231,19 @@ def test_handle_sigint_disabled():
     assert HINT not in output
     assert rc == 0
     assert_clean(output)
+
+def test_defer_sigint_child_exited():
+    # Direct test of the deferred SIGINT handler: with the child process
+    # gone, SIGINT raises KeyboardInterrupt right away instead of being
+    # recorded.
+    class DummyTool(TclTool):
+        def cmdline(self):
+            return ["true"]
+    tool = DummyTool()
+    tool.proc = subprocess.Popen(["true"])
+    tool.proc.wait()
+    with pytest.raises(KeyboardInterrupt):
+        with tool._defer_sigint(hint=True) as sigint:
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(1) # not reached: the handler runs on return of os.kill
+    assert sigint.count == 0
