@@ -58,6 +58,8 @@ Child process monitoring
 
 NoTcl detects unexpected child termination (crashes, explicit ``exit`` calls) using a sentinel named pipe. The Tcl side opens the write end at startup and keeps it open. The Python side monitors the read end with ``select()``. When the child dies, the OS closes the write end, making the read end readable (EOF), which Python detects immediately.
 
+The sentinel only works once the Tcl side has opened it. A tool that fails before it runs ``notcl.tcl`` at all (invalid command line arguments, missing license, ...) never does, and neither the sentinel nor the data pipes would ever become readable. To cover this case, Python additionally monitors the child process itself through a pidfd (``os.pidfd_open()``, Linux 5.3 and later), which becomes readable in the same ``select()`` calls when the process exits. This requires that the process spawned by ``cmdline()`` lives as long as the tool: a launcher script must ``exec`` the tool rather than fork it and exit. Without pidfd support, only the sentinel is monitored.
+
 This approach has several advantages over signal-based detection:
 
 - No SIGCHLD handler (allows concurrent TclTool instances)

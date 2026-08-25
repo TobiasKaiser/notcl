@@ -57,6 +57,7 @@ class BridgeServer:
         self.cm = None
         self.state = self.State.NotListening
         self.sentinel_fd = None
+        self.pidfd = None
         if custom_log_func:
             self.log = custom_log_func
 
@@ -64,6 +65,27 @@ class BridgeServer:
         """Open the read end of the sentinel pipe. Must be called before
         recv(TclHello) so the Tcl side's blocking WRONLY open can proceed."""
         self.sentinel_fd = os.open(self.fn_sentinel, os.O_RDONLY | os.O_NONBLOCK)
+
+    def watch_child(self, pid):
+        """
+        Additionally monitors the child process itself via a pidfd, which
+        becomes readable when the process exits. The sentinel pipe only
+        reports the child's death if the child has opened it, which a child
+        that fails before running notcl.tcl (e.g. due to invalid command
+        line args) never does. Without pidfd support (non-Linux, Linux
+        before 5.3), only the sentinel is monitored.
+        """
+        try:
+            self.pidfd = os.pidfd_open(pid)
+        except (AttributeError, OSError) as e:
+            self.log(f"BridgeServer: pidfd not available ({e!r}), monitoring sentinel only.")
+
+    def _exit_fds(self):
+        """File descriptors that become readable when the child exits."""
+        fds = [self.sentinel_fd]
+        if self.pidfd is not None:
+            fds.append(self.pidfd)
+        return fds
 
     @staticmethod
     def _bytes_available(fd):
@@ -87,6 +109,8 @@ class BridgeServer:
             finally:
                 if self.sentinel_fd is not None:
                     os.close(self.sentinel_fd)
+                if self.pidfd is not None:
+                    os.close(self.pidfd)
                 self.log("BridgeServer: connection closed.")
                 self.state = self.State.NotListening
 
@@ -94,14 +118,14 @@ class BridgeServer:
         assert self.state == self.State.WaitForRecv
         self.log(f"BridgeServer: Opening tcl2py pipe {self.fn_tcl2py} to receive message...")
 
-        # Open non-blocking so we can monitor the sentinel fd for child death
+        # Open non-blocking so we can monitor the exit fds for child death
         # while waiting for the Tcl side to connect and write.
         tcl2py_fd = os.open(self.fn_tcl2py, os.O_RDONLY | os.O_NONBLOCK)
         try:
             while True:
-                rdready, _, _ = select.select([tcl2py_fd, self.sentinel_fd], [], [])
+                rdready, _, _ = select.select([tcl2py_fd] + self._exit_fds(), [], [])
 
-                if self.sentinel_fd in rdready:
+                if any(fd in rdready for fd in self._exit_fds()):
                     raise ChildProcessEarlyExit()
 
                 if tcl2py_fd in rdready:
@@ -120,9 +144,9 @@ class BridgeServer:
                         break
                     else:
                         # No writer yet (premature EOF). Sleep briefly via
-                        # select on sentinel to avoid busy-looping while
+                        # select on the exit fds to avoid busy-looping while
                         # still detecting child death promptly.
-                        select.select([self.sentinel_fd], [], [], 0.01)
+                        select.select(self._exit_fds(), [], [], 0.01)
         finally:
             if tcl2py_fd >= 0:
                 os.close(tcl2py_fd)
@@ -135,21 +159,21 @@ class BridgeServer:
         assert self.state == self.State.WaitForSend
         self.log(f"BridgeServer: Opening py2tcl pipe {self.fn_py2tcl} to send message...")
 
-        # Open non-blocking so we can monitor the sentinel for child death
+        # Open non-blocking so we can monitor the exit fds for child death
         # while waiting for the Tcl side to open its read end.
         # O_WRONLY | O_NONBLOCK on a FIFO raises ENXIO when no reader is
-        # connected, so we retry in a loop, checking the sentinel between
+        # connected, so we retry in a loop, checking the exit fds between
         # attempts via select with a short timeout.
         while True:
-            rdready, _, _ = select.select([self.sentinel_fd], [], [], 0)
+            rdready, _, _ = select.select(self._exit_fds(), [], [], 0)
             if rdready:
                 raise ChildProcessEarlyExit()
             try:
                 py2tcl_fd = os.open(self.fn_py2tcl, os.O_WRONLY | os.O_NONBLOCK)
             except OSError as e:
                 if e.errno == errno.ENXIO:
-                    # No reader yet, wait for sentinel or timeout and retry
-                    rdready, _, _ = select.select([self.sentinel_fd], [], [], 0.01)
+                    # No reader yet, wait for exit fds or timeout and retry
+                    rdready, _, _ = select.select(self._exit_fds(), [], [], 0.01)
                     if rdready:
                         raise ChildProcessEarlyExit()
                     continue

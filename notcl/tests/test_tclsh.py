@@ -193,6 +193,29 @@ def test_child_terminates_zero():
     assert reaches1
     assert not reaches2
 
+def test_child_fails_to_start():
+    # The tool dies before it ever runs notcl.tcl (e.g. invalid command line
+    # args), so it never opens the sentinel pipe. This must be detected
+    # anyway, not hang. Runs in a child process with a timeout.
+    from .test_sigint import run_scenario
+    output, rc = run_scenario(dedent("""\
+        class BrokenTclsh(TclTool):
+            def cmdline(self):
+                return ["tclsh", "/nonexistent/notcl.tcl"]
+        tool = BrokenTclsh(log_fancy=False)
+        try:
+            with tool as t:
+                report("STARTED")
+        except ChildProcessEarlyExit:
+            report("EARLY_EXIT")
+        report("CHILD_RC", tool.proc.returncode)
+        report("DONE")
+        """), lambda p, line: None, timeout=10)
+    assert "SCENARIO: EARLY_EXIT\n" in output
+    assert "SCENARIO: CHILD_RC 1\n" in output
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
+
 def test_context_forwards_excepts():
     with pytest.raises(ValueError):
         with Tclsh() as t:

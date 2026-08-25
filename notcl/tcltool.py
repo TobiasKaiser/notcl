@@ -309,6 +309,9 @@ class TclTool(ABC):
             cwd = self.cwd
 
             self.proc = subprocess.Popen(cmdline, cwd=cwd, env=env)
+            # Detect the child's death even if it never opens the sentinel
+            # (e.g. because it fails before running notcl.tcl).
+            self.bs.watch_child(self.proc.pid)
 
             # Open sentinel read end early (before TclHello) so the Tcl
             # side's blocking WRONLY open on the sentinel FIFO can proceed.
