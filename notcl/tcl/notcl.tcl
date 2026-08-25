@@ -10,9 +10,34 @@ namespace eval NoTcl {
     set fn_py2tcl $env(NOTCL_PIPE_PY2TCL)
     set fn_sentinel $env(NOTCL_PIPE_SENTINEL)
 
-    # Output og log is written to screen and tool log file.
+    # Output of log is written to screen and tool log file.
+    # ANSI styling goes to /dev/tty so log files stay clean.
+    variable tty_fd
+    if { [catch {open /dev/tty w} tty_fd] } {
+        set tty_fd ""
+    }
+
+    proc tty_write {str} {
+        variable tty_fd
+        if { $tty_fd eq "" } {
+            return
+        }
+        if { [catch {
+            puts -nonewline $tty_fd $str
+            flush $tty_fd
+        }] } {
+            # Stop emitting ANSI codes to the tty if we loose the tty midway.
+            catch {close $tty_fd}
+            set tty_fd ""
+        }
+    }
+
     proc log {message} {
-        puts "\[notcl\] $message"
+        tty_write "\x1b\[93m"
+        puts -nonewline stdout "\[notcl\]"
+        flush stdout
+        tty_write "\x1b\[0m"
+        puts stdout " $message"
         flush stdout
     }
 
