@@ -268,18 +268,198 @@ def test_handle_sigint_disabled():
     assert rc == 0
     assert_clean(output)
 
-def test_defer_sigint_child_exited():
-    # Direct test of the deferred SIGINT handler: with the child process
-    # gone, SIGINT raises KeyboardInterrupt right away instead of being
-    # recorded.
+def test_transaction_child_exited():
+    # Direct test of the SIGINT handler: with the child process gone,
+    # SIGINT raises KeyboardInterrupt right away instead of being deferred.
+    from ..tcltool import _sigint
     class DummyTool(TclTool):
         def cmdline(self):
             return ["true"]
     tool = DummyTool()
     tool.proc = subprocess.Popen(["true"])
     tool.proc.wait()
-    with pytest.raises(KeyboardInterrupt):
-        with tool._defer_sigint(hint=True) as sigint:
-            os.kill(os.getpid(), signal.SIGINT)
-            time.sleep(1) # not reached: the handler runs on return of os.kill
-    assert sigint.count == 0
+    prev = signal.getsignal(signal.SIGINT)
+    with _sigint.context(True):
+        assert signal.getsignal(signal.SIGINT) != prev
+        with pytest.raises(KeyboardInterrupt):
+            with tool._transaction(hint=True) as sigint:
+                os.kill(os.getpid(), signal.SIGINT)
+                time.sleep(1) # not reached: the handler runs on return of os.kill
+        assert not sigint.interrupted
+    assert signal.getsignal(signal.SIGINT) == prev
+    assert not _sigint.inflight
+    assert not _sigint.pending
+
+def sigint_on_prompt(p, line):
+    if "Please exit Tcl tool" in line:
+        time.sleep(0.5)
+        os.killpg(p.pid, signal.SIGINT)
+
+def test_sigint_at_interactive_prompt_discarded():
+    # With interact=True, Ctrl+C while waiting for the user to exit the
+    # tool is between the user and the tool; Python must not raise
+    # KeyboardInterrupt afterwards. The launcher lingers after tclsh has
+    # exited, standing in for a tool that returns to its prompt.
+    output, rc = run_scenario(dedent("""\
+        class LingeringTclsh(TclTool):
+            def cmdline(self):
+                return ["sh", "-c", 'trap "" INT; tclsh "$1"; sleep 2',
+                    "sh", self.script_name()]
+        try:
+            with LingeringTclsh(interact=True, log_fancy=False) as t:
+                t.expr(1, "+", 1)
+            report("EXITED_NORMALLY")
+        except KeyboardInterrupt:
+            report("KEYBOARDINTERRUPT")
+        report("DONE")
+        """), sigint_on_prompt)
+    assert "Please exit Tcl tool" in output
+    assert "SCENARIO: EXITED_NORMALLY\n" in output
+    assert "SCENARIO: KEYBOARDINTERRUPT\n" not in output
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
+    assert_clean(output)
+
+THREAD_PRELUDE = """\
+    import threading
+    def run_in_thread(func, *args):
+        out = []
+        def target():
+            try:
+                out.append(func(*args))
+            except BaseException as e:
+                out.append(f"{type(e).__name__}: {e}")
+        th = threading.Thread(target=target)
+        th.start()
+        return th, out
+    """
+
+def test_thread_command_main_owns_context():
+    # The context is entered in the main thread, the command runs in a
+    # worker thread, the main thread waits in join(). Ctrl+C: the tool
+    # aborts the command (TclError in the worker); only then is
+    # KeyboardInterrupt raised in the main thread, so that the context
+    # is not unwound (and the tool terminated) under the worker.
+    CustomTclsh.require()
+    output, rc = run_scenario(dedent(THREAD_PRELUDE) + dedent("""\
+        def command(t):
+            t.exec("sleep", "5")
+            return "NO_ERROR"
+        try:
+            with CustomTclsh(log_fancy=False) as t:
+                tool = t.tcl_tool
+                t.ignore_sigint()
+                th, out = run_in_thread(command, t)
+                report("READY")
+                th.join()
+                report("JOINED", out)
+        except KeyboardInterrupt:
+            th.join()
+            report("KEYBOARDINTERRUPT", out)
+        report("CHILD_RC", tool.proc.returncode)
+        report("DONE")
+        """), sigint_on_ready)
+    assert "SCENARIO: JOINED" not in output
+    assert "SCENARIO: KEYBOARDINTERRUPT ['TclError: child killed: interrupt']\n" in output
+    assert "SCENARIO: CHILD_RC 0\n" in output # quit regularly, not terminated
+    assert "SCENARIO: DONE\n" in output
+    assert output.count(HINT) == 1
+    assert rc == 0
+    assert_clean(output)
+
+def test_thread_command_tool_ignores_sigint():
+    # As above, but the tool ignores the SIGINT and completes the command.
+    # The worker sees the regular result; KeyboardInterrupt is raised in
+    # the main thread once the command has completed.
+    CustomTclsh.require()
+    output, rc = run_scenario(dedent(THREAD_PRELUDE) + dedent("""\
+        def command(t):
+            t.after(2000)
+            return "NO_ERROR"
+        try:
+            with CustomTclsh(log_fancy=False) as t:
+                tool = t.tcl_tool
+                t.ignore_sigint()
+                th, out = run_in_thread(command, t)
+                report("READY")
+                th.join()
+                report("JOINED", out)
+        except KeyboardInterrupt:
+            th.join()
+            report("KEYBOARDINTERRUPT", out)
+        report("CHILD_RC", tool.proc.returncode)
+        report("DONE")
+        """), sigint_on_ready)
+    assert "SCENARIO: JOINED" not in output
+    assert "SCENARIO: KEYBOARDINTERRUPT ['NO_ERROR']\n" in output
+    assert "SCENARIO: CHILD_RC 0\n" in output
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
+    assert_clean(output)
+
+def test_thread_owns_context():
+    # The context is entered and used in a worker thread only; the main
+    # thread waits in join(). Ctrl+C: the tool aborts the command (TclError
+    # in the worker), the worker quits the tool regularly, and the main
+    # thread gets KeyboardInterrupt, which does not touch the context.
+    CustomTclsh.require()
+    output, rc = run_scenario(dedent(THREAD_PRELUDE) + dedent("""\
+        def session():
+            with CustomTclsh(log_fancy=False) as t:
+                t.ignore_sigint()
+                report("READY")
+                try:
+                    t.exec("sleep", "5")
+                except TclError as e:
+                    report("TCLERROR", e)
+                report("EXPR", t.expr(1, "+", 1))
+            return t.tcl_tool.proc.returncode
+        th, out = run_in_thread(session)
+        try:
+            th.join()
+            report("JOINED", out)
+        except KeyboardInterrupt:
+            th.join()
+            report("KEYBOARDINTERRUPT", out)
+        report("DONE")
+        """), sigint_on_ready)
+    assert "SCENARIO: TCLERROR child killed: interrupt\n" in output
+    assert "SCENARIO: EXPR 2\n" in output # tool still usable in the worker
+    assert "SCENARIO: KEYBOARDINTERRUPT [0]\n" in output # tool quit regularly
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
+    assert_clean(output)
+
+def test_thread_main_and_worker_in_flight():
+    # Both the main thread and a worker thread have a command in flight
+    # on their own tools. Ctrl+C: both tools abort; the main thread gets
+    # the TclError of its own command, no KeyboardInterrupt afterwards.
+    CustomTclsh.require()
+    output, rc = run_scenario(dedent(THREAD_PRELUDE) + dedent("""\
+        def command(t):
+            t.exec("sleep", "5")
+            return "NO_ERROR"
+        try:
+            with CustomTclsh(log_fancy=False) as a, CustomTclsh(log_fancy=False) as b:
+                a.ignore_sigint(); b.ignore_sigint()
+                th, out = run_in_thread(command, b)
+                report("READY")
+                try:
+                    a.exec("sleep", "5")
+                    report("NO_ERROR")
+                except TclError as e:
+                    report("MAIN_TCLERROR", e)
+                th.join()
+                report("JOINED", out)
+                report("EXPR", a.expr(1, "+", 1), b.expr(2, "+", 2))
+        except KeyboardInterrupt:
+            report("KEYBOARDINTERRUPT")
+        report("DONE")
+        """), sigint_on_ready)
+    assert "SCENARIO: MAIN_TCLERROR child killed: interrupt\n" in output
+    assert "SCENARIO: JOINED ['TclError: child killed: interrupt']\n" in output
+    assert "SCENARIO: EXPR 2 4\n" in output
+    assert "SCENARIO: KEYBOARDINTERRUPT" not in output
+    assert "SCENARIO: DONE\n" in output
+    assert rc == 0
+    assert_clean(output)

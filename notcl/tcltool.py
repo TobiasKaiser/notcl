@@ -56,6 +56,186 @@ class TclError(Exception):
         return self.text
 
 
+def _write_unbuffered(line:str):
+    """
+    Writes a line to stdout bypassing Python's buffered stream. For use
+    in signal handlers: print() would raise "reentrant call" if the
+    signal interrupted a print() in progress.
+    """
+    try:
+        fd = sys.stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        # stdout replaced by something without a file descriptor
+        # (e.g. pytest's capsys); reentrancy is not a concern there.
+        print(line, flush=True)
+        return
+    os.write(fd, (line + "\n").encode(errors="replace"))
+
+
+class _SigintDispatcher:
+    """
+    Process-wide deferral of SIGINT while bridge transactions are in flight.
+
+    On Ctrl+C, the terminal sends SIGINT to the whole foreground process
+    group, i.e. to Python and to all Tcl tools alike. Each tool handles the
+    signal its own way (typically aborting its current command); Python
+    must not react in the middle of a bridge transaction, as this would
+    leave the tool without a communication partner, and it must not unwind
+    a TclTool context while another thread is still talking to that tool.
+
+    Python delivers signals to the main thread only, and KeyboardInterrupt
+    can only be raised there. So, while any TclTool context that was
+    entered in the main thread is active, one SIGINT handler is installed
+    (there is only one per process anyway) that acts on the transactions
+    currently in flight in any thread:
+
+    - If no transaction is in flight, or all tools in flight have exited
+      already, KeyboardInterrupt is raised right away, like plain Python.
+    - Otherwise, the transactions in flight are marked as interrupted and
+      the signal is recorded as pending. A transaction in the main thread
+      delivers it when it ends: eval() raises TclError or
+      KeyboardInterrupt (see TclTool.handle_sigint). If the last transaction
+      in flight ends in another thread, that thread re-sends SIGINT to the
+      main thread, so that KeyboardInterrupt is raised there wherever it is
+      (e.g. in Thread.join()).
+
+    Transactions of contexts entered in other threads are covered as long
+    as the handler is installed. Without any main-thread context, Python's
+    default handling applies: KeyboardInterrupt in the main thread right
+    away, which does not touch a context owned by another thread.
+
+    The handler runs in the main thread between two bytecodes, possibly
+    while the main thread holds self.lock, so it must not take the lock;
+    it only snapshots the dict of transactions and sets flags.
+    """
+
+    class Transaction:
+        def __init__(self, tool:"TclTool", hint:bool):
+            self.tool = tool
+            self.hint = hint
+            self.interrupted = False
+            """After the transaction, in the main thread: SIGINT was received
+            during it (or was pending from before and is adopted for
+            delivery); the caller raises TclError or KeyboardInterrupt.
+            Always False afterwards in other threads."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.contexts = 0 # active main-thread contexts with handle_sigint
+        self.prev_handler = None
+        self.inflight = {} # id(Transaction) -> Transaction
+        self.pending = False # SIGINT deferred, not yet delivered to the main thread
+
+    @staticmethod
+    def _in_main_thread() -> bool:
+        return threading.current_thread() is threading.main_thread()
+
+    @contextmanager
+    def context(self, enabled:bool):
+        """
+        Context of one TclTool context. Installs the handler with the
+        first main-thread context and restores the previous one with the
+        last. Contexts entered in other threads cannot install a handler
+        (Python allows this in the main thread only) and are not counted.
+        """
+        if not enabled or not self._in_main_thread():
+            yield
+            return
+        with self.lock:
+            self.contexts += 1
+            install = self.contexts == 1
+        if install:
+            self.prev_handler = signal.signal(signal.SIGINT, self._handler)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.contexts -= 1
+                uninstall = self.contexts == 0
+            if uninstall:
+                prev = self.prev_handler
+                self.prev_handler = None
+                if prev is None: # previous handler not installed from Python
+                    prev = signal.SIG_DFL
+                signal.signal(signal.SIGINT, prev)
+
+    @contextmanager
+    def transaction(self, tool:"TclTool", hint:bool):
+        rec = self.Transaction(tool, hint)
+        is_main = self._in_main_thread()
+        with self.lock:
+            self.inflight[id(rec)] = rec
+        completed = False
+        try:
+            yield rec
+            completed = True
+        finally:
+            deliver = False
+            with self.lock:
+                del self.inflight[id(rec)]
+                if is_main:
+                    if completed and not rec.interrupted and self.pending and not self.inflight:
+                        # SIGINT arrived while only other threads'
+                        # transactions were in flight; this one is the
+                        # last to end and delivers it.
+                        rec.interrupted = True
+                    if rec.interrupted:
+                        # The caller raises TclError or KeyboardInterrupt
+                        # (or an exception is propagating already).
+                        self.pending = False
+                else:
+                    # The signal is delivered to the main thread only; the
+                    # caller in this thread sees the tool's regular
+                    # response (e.g. TclError if it aborted the command).
+                    rec.interrupted = False
+                    if self.pending and not self.inflight:
+                        self.pending = False
+                        deliver = True
+            if deliver:
+                # Let the main thread's handler raise KeyboardInterrupt now
+                # that no transaction is in flight anymore. A real signal
+                # (unlike _thread.interrupt_main) also wakes the main
+                # thread from blocking calls such as Thread.join().
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+
+    def discard(self, rec:"Transaction"):
+        """Forget a SIGINT received during rec (Ctrl+C at an interactive
+        tool's prompt is between the user and the tool)."""
+        with self.lock:
+            rec.interrupted = False
+            self.pending = False
+
+    def _handler(self, signum, frame):
+        # No print() here: the signal may have interrupted a print() in
+        # progress, whose stream lock is then held (see _write_unbuffered).
+        inflight = list(self.inflight.values())
+        live = [r for r in inflight if r.tool.proc.poll() is None]
+        debug = any(r.tool.debug_py for r in inflight)
+        if not live:
+            # No transaction to defer to (or the tools in flight are gone
+            # already, so there is no one to leave the signal to; the
+            # deferral would only leave the user stuck).
+            if debug:
+                _write_unbuffered("[notcl] Python: SIGINT received, no Tcl tool "
+                    "transaction in flight; raising KeyboardInterrupt.")
+            self.pending = False
+            raise KeyboardInterrupt
+        for r in live:
+            if debug:
+                _write_unbuffered(f"[notcl] Python: SIGINT received, deferred "
+                    f"(pid {r.tool.proc.pid} in flight).")
+            if r.hint and not r.interrupted:
+                _write_unbuffered(r.tool._format_log("info", "Info:",
+                    "SIGINT received, waiting for the Tcl tool "
+                    "to abort the current command. If the tool does not "
+                    f"respond, terminate it (pid {r.tool.proc.pid}) or type "
+                    "\"exit\" at its prompt to abort."))
+            r.interrupted = True
+        self.pending = True
+
+_sigint = _SigintDispatcher()
+
+
 class TclTool(ABC):
     """
     Base class for wrapping Tcl-based tools as Python interfaces.
@@ -123,6 +303,9 @@ class TclTool(ABC):
                 same signal from the terminal, aborts its current command as
                 it would interactively. Once the tool responds, a Tcl error
                 is raised as TclError, otherwise KeyboardInterrupt is raised.
+                Commands running in other threads are covered as well, but
+                KeyboardInterrupt is only ever raised in the main thread,
+                once no command is in flight anymore (see _SigintDispatcher).
                 If False, Ctrl+C raises KeyboardInterrupt immediately and the
                 Tcl tool is terminated. Default: True.
         """
@@ -209,65 +392,23 @@ class TclTool(ABC):
             print(f"[notcl] Python: {message}", flush=True)
 
 
-    class _SigintRecord:
-        """Counts SIGINTs received while they are deferred (see _defer_sigint)."""
-        def __init__(self):
-            self.count = 0
-
     @contextmanager
-    def _defer_sigint(self, hint:bool):
+    def _transaction(self, hint:bool):
         """
-        Context in which SIGINT is recorded instead of raising KeyboardInterrupt.
-
-        On Ctrl+C, the terminal sends SIGINT to the whole foreground process
-        group, i.e. to Python and to the Tcl tool alike. The tool handles the
-        signal its own way (typically aborting its current command); Python
-        must not react in the middle of a bridge transaction, as this would
-        leave the tool without a communication partner. The yielded record
-        tells the caller afterwards whether SIGINT was received.
-
-        If the Tcl tool has exited already when SIGINT arrives, there is no
-        one to defer to, and KeyboardInterrupt is raised immediately.
-
-        Signal handlers can only be installed in the main thread; in other
-        threads (where Python never delivers SIGINT anyway) and with
-        handle_sigint=False, this is a no-op.
+        Context for one bridge transaction (send + receive, or the teardown),
+        during which SIGINT is deferred (see _SigintDispatcher). The yielded
+        _SigintDispatcher.Transaction tells the caller afterwards whether a
+        SIGINT was received. With handle_sigint=False, this is a no-op.
 
         Args:
-            hint: Print a hint on the first SIGINT telling the user how to
-                proceed if the Tcl tool does not respond.
+            hint: Print a hint on SIGINT telling the user how to proceed if
+                the Tcl tool does not respond.
         """
-        record = self._SigintRecord()
-        if not self.handle_sigint or threading.current_thread() is not threading.main_thread():
-            yield record
+        if not self.handle_sigint:
+            yield _SigintDispatcher.Transaction(self, hint)
             return
-
-        def handler(signum, frame):
-            # No print() here: the signal may have interrupted a print() in
-            # progress, whose stream lock is then held (see _write_unbuffered).
-            if self.proc.poll() is not None:
-                # The Tcl tool is gone already, so there is no one to leave
-                # the signal to; the deferral would only leave the user
-                # stuck. Behave like plain Python instead.
-                if self.debug_py:
-                    self._write_unbuffered("[notcl] Python: SIGINT received, "
-                        "but the Tcl tool has exited; raising KeyboardInterrupt.")
-                raise KeyboardInterrupt
-            record.count += 1
-            if self.debug_py:
-                self._write_unbuffered(f"[notcl] Python: SIGINT received (#{record.count}), deferred.")
-            if hint and record.count == 1:
-                self._write_unbuffered(self._format_log("info", "Info:",
-                    "SIGINT received, waiting for the Tcl tool "
-                    "to abort the current command. If the tool does not "
-                    f"respond, terminate it (pid {self.proc.pid}) or type "
-                    "\"exit\" at its prompt to abort."))
-
-        prev_handler = signal.signal(signal.SIGINT, handler)
-        try:
-            yield record
-        finally:
-            signal.signal(signal.SIGINT, prev_handler)
+        with _sigint.transaction(self, hint) as transaction:
+            yield transaction
 
     def _terminate_child(self):
         """
@@ -294,7 +435,8 @@ class TclTool(ABC):
         child_terminated = False
 
         with BridgeServer(custom_log_func=self.debug_log) as self.bs,\
-            importlib.resources.as_file(importlib.resources.files(tcl).joinpath("notcl.tcl")) as script_name:
+            importlib.resources.as_file(importlib.resources.files(tcl).joinpath("notcl.tcl")) as script_name,\
+            _sigint.context(self.handle_sigint):
 
             try:
                 self._script_name = script_name
@@ -323,10 +465,10 @@ class TclTool(ABC):
             exc_pending = False
 
             try:
-                with self._defer_sigint(hint=False) as sigint:
+                with self._transaction(hint=False) as sigint:
                     self.hello = self.bs.recv(msg.TclHello)
                 self.debug_log(f"Received TclHello: {self.hello}")
-                if sigint.count:
+                if sigint.interrupted:
                     # Ctrl+C during tool startup; the tool survived it.
                     self.debug_log("SIGINT during startup, raising KeyboardInterrupt.")
                     quit = True
@@ -360,7 +502,7 @@ class TclTool(ABC):
                 # transaction or leave the child unwaited for. It is deferred
                 # and raised as KeyboardInterrupt afterwards, unless an
                 # exception is propagating already.
-                with self._defer_sigint(hint=False) as sigint:
+                with self._transaction(hint=False) as sigint:
                     # Whether *this* tool's child has exited is determined
                     # here rather than from the type of a propagating
                     # exception: a ChildProcessEarlyExit may stem from a
@@ -388,11 +530,11 @@ class TclTool(ABC):
                             child_exited_early = True
 
                     self.debug_log("TclTool context finished, waiting for child process to terminate.")
+                    rc = self.proc.wait()
                     if not (quit or child_exited_early or child_terminated):
                         # Interactive use: Ctrl+C at the tool's prompt is
                         # between the user and the tool; discard it.
-                        sigint.count = 0
-                    rc = self.proc.wait()
+                        _sigint.discard(sigint)
 
                 if child_exited_early:
                     self.debug_log(f"Child exited early with return code {rc}.")
@@ -411,7 +553,7 @@ class TclTool(ABC):
                     self.debug_log(f"Child process terminated with abnormal return code {rc}.")
                     raise subprocess.CalledProcessError(rc, cmdline)
 
-                if sigint.count and not exc_pending:
+                if sigint.interrupted and not exc_pending:
                     self.debug_log("SIGINT during teardown, raising KeyboardInterrupt.")
                     raise KeyboardInterrupt
 
@@ -499,22 +641,6 @@ class TclTool(ABC):
 
         return f"{style_notcl}[notcl]{style_reset} {style_symbol}{log_symbol}{style_reset} {data}"
 
-    @staticmethod
-    def _write_unbuffered(line:str):
-        """
-        Writes a line to stdout bypassing Python's buffered stream. For use
-        in signal handlers: print() would raise "reentrant call" if the
-        signal interrupted a print() in progress.
-        """
-        try:
-            fd = sys.stdout.fileno()
-        except (AttributeError, OSError, ValueError):
-            # stdout replaced by something without a file descriptor
-            # (e.g. pytest's capsys); reentrancy is not a concern there.
-            print(line, flush=True)
-            return
-        os.write(fd, (line + "\n").encode(errors="replace"))
-
     def eval(self, cmd: str) -> TclRemoteObjRef:
         """
         Evaluate a Tcl command string directly.
@@ -534,7 +660,7 @@ class TclTool(ABC):
                 the Tcl tool did not respond with an error (see handle_sigint).
         """
         self.log("command", cmd)
-        with self._defer_sigint(hint=True) as sigint:
+        with self._transaction(hint=True) as sigint:
             self.bs.send(msg.PyProcedureCall(command=cmd))
             r_msg = self.bs.recv(msg.TclProcedureResult)
         cmd_idx = int(r_msg.cmd_idx)
@@ -543,7 +669,7 @@ class TclTool(ABC):
         if err_code:
             self.log("error", f"{r_msg.result}")
             raise TclError(r_msg.result)
-        elif sigint.count:
+        elif sigint.interrupted:
             # The Tcl tool did not turn the SIGINT into an error (it ignored
             # it, or the signal arrived outside the command's execution).
             # Do not let the Ctrl+C go unnoticed.

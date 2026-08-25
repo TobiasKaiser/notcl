@@ -59,6 +59,10 @@ If the tool does not respond to the Ctrl+C at all, terminate the tool process (i
 
 Pass ``handle_sigint=False`` to :class:`~notcl.TclTool` to get plain Python behavior instead: Ctrl+C raises :class:`KeyboardInterrupt` immediately and the Tcl tool is terminated.
 
+Multiple tools (nested or side by side) are handled alike: each tool receives the SIGINT itself and reacts its own way; an idle tool that does not handle SIGINT (like plain ``tclsh``) dies, which is reported as :class:`~notcl.ChildProcessEarlyExit` at the latest when its ``with`` block is left.
+
+With threads, keep in mind that Python delivers signals to the main thread only, so :class:`KeyboardInterrupt` can only ever be raised there. NoTcl defers the signal while a Tcl command is in flight in *any* thread: a command running in another thread completes with the tool's regular response (a :class:`~notcl.TclError` if the tool aborted it), and :class:`KeyboardInterrupt` is raised in the main thread once no command is in flight anymore - for example in :meth:`threading.Thread.join`, so that a ``with`` block owned by the main thread is not unwound under the thread that is still using the tool. A tool whose ``with`` block is entered and used entirely in another thread is not affected by the main thread's :class:`KeyboardInterrupt`. As always, a tool must only be used by one thread at a time.
+
 Calling Tcl Commands
 --------------------
 
